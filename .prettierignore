@@ -1,0 +1,5 @@
+dist
+node_modules
+.opfs
+.playwright-cli
+package-lock.json

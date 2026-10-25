@@ -1,0 +1,6 @@
+{
+  "name": "PharmaVault Inventory Foundation",
+  "description": "Offline-first pharmacy inventory foundation powered by OPFS SQLite-Wasm, strict integer-cent pricing, and append-only audit ledgers.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
