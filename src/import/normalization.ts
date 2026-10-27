@@ -108,10 +108,10 @@ export function parsePriceToCents(raw: string | null | undefined): PriceParseRes
     };
   }
 
-  // Strip allowed leading/trailing currency symbols or ISO codes ($, €, £, USD, EUR, GBP, CAD, CHF)
+  // Strip allowed leading/trailing currency symbols or ISO codes
   const withoutCurrency = trimmed
-    .replace(/^(?:USD|EUR|GBP|CAD|CHF|\$|€|£)\s*/i, '')
-    .replace(/\s*(?:USD|EUR|GBP|CAD|CHF|\$|€|£)$/i, '')
+    .replace(/^(?:DZD|DA|USD|EUR|GBP|CAD|CHF|CNY|TRY|AED|SAR|CA\$|\$|€|£|¥|₺)\s*/i, '')
+    .replace(/\s*(?:DZD|DA|USD|EUR|GBP|CAD|CHF|CNY|TRY|AED|SAR|CA\$|\$|€|£|¥|₺)$/i, '')
     .trim();
 
   if (withoutCurrency === '' || !/^[0-9.,]+$/.test(withoutCurrency)) {

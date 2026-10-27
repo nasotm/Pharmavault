@@ -1,0 +1,101 @@
+commercial_name,dci,strength,dosage_form,laboratory,ppa_da
+Amoxil,Amoxicilline,500 mg,Gélule,GSK,350.00
+Clamoxyl,Amoxicilline,1 g,Poudre pour suspension buvable,GlaxoSmithKline,520.00
+Doliprane,Paracétamol,1000 mg,Comprimé,Sanofi,180.00
+Doliprane,Paracétamol,500 mg,Gélule,Sanofi,135.00
+Efferalgan,Paracétamol,1 g,Comprimé effervescent,UPSA,210.00
+Augmentin,Amoxicilline / Acide clavulanique,1 g / 125 mg,Poudre pour suspension buvable,GSK,780.00
+Ventoline,Salbutamol,100 mcg/dose,Aérosol doseur,GlaxoSmithKline,320.00
+Spasfon,Phloroglucinol,80 mg,Comprimé enrobé,Teva,280.00
+Spasfon-Lyoc,Phloroglucinol,80 mg,Lyophilisat oral,Teva,310.00
+Glucophage,Metformine,850 mg,Comprimé pelliculé,Merck,420.00
+Tahor,Atorvastatine,20 mg,Comprimé pelliculé,Pfizer,950.00
+Novalgine,Métamizole,500 mg,Gélule,Biopharm,210.00
+Aspegic,Acide acétylsalicylique,500 mg,Poudre pour solution buvable,Sanofi,160.00
+Aspegic,Acide acétylsalicylique,100 mg,Poudre pour solution buvable,Sanofi,140.00
+Dafalgan,Paracétamol,500 mg,Gélule,UPSA,150.00
+Voltarene,Diclofénac,50 mg,Comprimé gastrorésistant,Novartis,390.00
+Profenid,Kétoprofène,100 mg,Comprimé pelliculé,Sanofi,440.00
+Cataflam,Diclofénac potassium,50 mg,Comprimé enrobé,Novartis,360.00
+Antadys,Flurbiprofène,100 mg,Comprimé pelliculé,Mylan,380.00
+Aerius,Desloratadine,5 mg,Comprimé pelliculé,Organon,550.00
+Zyrtec,Cétirizine,10 mg,Comprimé pelliculé,UCB,480.00
+Celestene,Bétaméthasone,2 mg,Comprimé effervescent,Organon,340.00
+Solupred,Prednisolone,20 mg,Comprimé effervescent,Sanofi,410.00
+Cortancyl,Prednisone,5 mg,Comprimé,Sanofi,220.00
+Oflocet,Ofloxacine,200 mg,Comprimé pelliculé,Sanofi,690.00
+Zinnat,Céfuroxime axétil,500 mg,Comprimé pelliculé,GSK,850.00
+Pyostacine,Pristinamycine,500 mg,Comprimé pelliculé,Sanofi,1120.00
+Oroken,Cefpodoxime,200 mg,Comprimé pelliculé,Pierre Fabre,1250.00
+Josacine,Josamycine,500 mg,Comprimé pelliculé,Astellas,720.00
+Flagyl,Métronidazole,500 mg,Comprimé pelliculé,Sanofi,290.00
+Bactrim,Sulfaméthoxazole / Triméthoprime,400 mg / 80 mg,Comprimé,Roche,260.00
+Smecta,Diosmectite,3 g,Poudre pour suspension buvable,Ipsen,310.00
+Bedelix,Montmorillonite beidellitique,3 g,Poudre pour suspension buvable,Ipsen,290.00
+Gaviscon,Alginate de sodium / Bicarbonate de sodium,250 mg / 133.5 mg,Comprimé à mâcher,Reckitt Benckiser,360.00
+Maalox,Hydroxydes d'aluminium et de magnésium,400 mg / 400 mg,Comprimé à mâcher,Sanofi,280.00
+Inexium,Ésoméprazole,40 mg,Comprimé gastrorésistant,AstraZeneca,980.00
+Mopral,Oméprazole,20 mg,Gélule gastrorésistante,AstraZeneca,620.00
+Primperan,Métoclopramide,10 mg,Comprimé,Sanofi,190.00
+Vogalene,Métopimazine,15 mg,Gélule,Substipharm,240.00
+Motilium,Dompéridone,10 mg,Comprimé pelliculé,Janssen,270.00
+Debridat,Trimébutine,100 mg,Comprimé pelliculé,Pfizer,350.00
+Meteospasmyl,Alvèrine / Siméticone,60 mg / 300 mg,Capsule molle,Mayoly Spindler,410.00
+Buscopan,Butylhyoscine,10 mg,Comprimé enrobé,Sanofi,230.00
+Contramal,Tramadol,50 mg,Gélule,Grünenthal,390.00
+Claradol,Paracétamol,500 mg,Comprimé,Pierre Fabre,120.00
+Kardegic,Acétylsalicylate de DL-lysine,75 mg,Poudre pour solution buvable,Sanofi,250.00
+Plavix,Clopidogrel,75 mg,Comprimé pelliculé,Sanofi,1450.00
+Lovenox,Énoxaparine sodique,4000 UI (0.4 ml),Solution injectable en seringue préremplie,Sanofi,1850.00
+Sintrom,Acénocoumarol,4 mg,Comprimé sécable,Novartis,210.00
+Coversyl,Périndopril,5 mg,Comprimé pelliculé,Servier,780.00
+Triatec,Ramipril,5 mg,Comprimé sécable,Sanofi,690.00
+Aprovel,Irbésartan,150 mg,Comprimé pelliculé,Sanofi,890.00
+CoAprovel,Irbésartan / Hydrochlorothiazide,150 mg / 12.5 mg,Comprimé pelliculé,Sanofi,980.00
+Loxen,Nicardipine,20 mg,Comprimé,Chiesi,340.00
+Amlor,Amlodipine,5 mg,Gélule,Pfizer,620.00
+Tensinor,Aténolol,100 mg,Comprimé pelliculé,AstraZeneca,410.00
+Seloken,Métoprolol,100 mg,Comprimé sécable,AstraZeneca,380.00
+Avlocardyl,Propranolol,40 mg,Comprimé sécable,AstraZeneca,210.00
+Seretide,Fluticasone / Salmétérol,250 mcg / 25 mcg,Poudre pour inhalation,GSK,2400.00
+Symbicort,Budésonide / Formotérol,200 mcg / 6 mcg,Poudre pour inhalation,AstraZeneca,2600.00
+Atrovent,Ipratropium,20 mcg/dose,Solution pour inhalation par nébuliseur,Boehringer Ingelheim,490.00
+Singulair,Montélukast,10 mg,Comprimé pelliculé,Organon,1150.00
+Hexaquine,Quinine / Thiamine,100 mg / 10 mg,Comprimé enrobé,Sanofi,310.00
+Magne B6,Magnésium / Pyridoxine,470 mg / 5 mg,Comprimé pelliculé,Sanofi,390.00
+Diffu-K,Chlorure de potassium,600 mg,Gélule à libération prolongée,Mylan,320.00
+Crestor,Rosuvastatine,10 mg,Comprimé pelliculé,AstraZeneca,1280.00
+Lipanthyl,Fénofibrate,160 mg,Comprimé pelliculé,Abbott,850.00
+Diamicron,Gliclazide,60 mg,Comprimé à libération modifiée,Servier,720.00
+Amarel,Glimépiride,2 mg,Comprimé sécable,Sanofi,580.00
+Lantus,Insuline glargine,100 UI/ml,Solution injectable en stylo prérempli,Sanofi,3100.00
+Humalog,Insuline lispro,100 UI/ml,Solution injectable en stylo prérempli,Lilly,2950.00
+Novorapid,Insuline aspart,100 UI/ml,Solution injectable en stylo prérempli,Novo Nordisk,3050.00
+Levothyrox,Lévothyroxine sodique,100 mcg,Comprimé sécable,Merck,260.00
+Deroxat,Paroxétine,20 mg,Comprimé pelliculé sécable,GSK,890.00
+Seroplex,Escitalopram,10 mg,Comprimé pelliculé sécable,Lundbeck,950.00
+Zoloft,Sertraline,50 mg,Gélule,Pfizer,920.00
+Xanax,Alprazolam,0.5 mg,Comprimé sécable,Viatris,290.00
+Lexomil,Bromazépam,6 mg,Comprimé bagueté sécable,Roche,340.00
+Stilnox,Zolpidem,10 mg,Comprimé pelliculé sécable,Sanofi,420.00
+Atarax,Hydroxyzine,25 mg,Comprimé pelliculé sécable,UCB,280.00
+Tercian,Cyamémazine,25 mg,Comprimé pelliculé,Sanofi,360.00
+Liorésal,Baclofène,10 mg,Comprimé sécable,Novartis,310.00
+Rivotril,Clonazépam,2 mg,Comprimé sécable,Roche,270.00
+Depakine,Valproate de sodium,500 mg,Comprimé pelliculé chronosphere,Sanofi,680.00
+Tegretol,Carbamazépine,200 mg,Comprimé sécable,Novartis,450.00
+Lamictal,Lamotrigine,50 mg,Comprimé dispersible,GSK,820.00
+Keppra,Lévétiracétam,500 mg,Comprimé pelliculé,UCB,1650.00
+Lyrica,Prégabaline,75 mg,Gélule,Pfizer,1420.00
+Neurontin,Gabapentine,300 mg,Gélule,Pfizer,980.00
+Dafalgan Codéiné,Paracétamol / Codéine,500 mg / 30 mg,Comprimé effervescent,UPSA,320.00
+Topalgic,Tramadol,50 mg,Gélule,Sanofi,380.00
+Ixprim,Paracétamol / Tramadol,325 mg / 37.5 mg,Comprimé pelliculé,Grünenthal,490.00
+Miorel,Thiocolchicoside,4 mg,Gélule,Pierre Fabre,360.00
+Colramscyl,Colchicine,1 mg,Comprimé,Sanofi,240.00
+Zyloric,Allopurinol,100 mg,Comprimé,AstraZeneca,280.00
+Adrigyl,Cholécalciférol (Vitamine D3),10000 UI/ml,Gouttes buvables en flacon,HRA Pharma,310.00
+Uvedose,Cholécalciférol (Vitamine D3),100000 UI,Ampoule buvable,Crinex,260.00
+Tardyferon,Sulfate ferreux,80 mg,Comprimé pelliculé,Pierre Fabre,340.00
+Foldine,Acide folique,5 mg,Comprimé,Expanpharm,180.00
+Spasfon Injectable,Phloroglucinol,40 mg/4ml,Solution injectable,Teva,290.00

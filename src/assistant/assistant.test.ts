@@ -16,11 +16,14 @@ import {
   AssistantRateLimitError,
   clearAssistantRequestLogs,
   executeGuardedToolCall,
+  generateQuickAccessAiTrends,
   getAssistantRequestLogs,
   getGuardRejectionLogs,
+  NO_RECENT_SALES_TREND_MESSAGE,
   PHARMACY_ASSISTANT_SYSTEM_PROMPT,
   PHARMACY_ASSISTANT_VERBATIM_PROMPT,
   runAssistantTurn,
+  verifyInsightNumbersGroundedInSql,
   type ListLowStockToolOutput,
 } from './assistant';
 
@@ -48,6 +51,8 @@ Never perform arithmetic yourself — always call calc_price.`;
     'list_low_stock',
     'list_expiring',
     'calc_price',
+    'get_revenue',
+    'find_by_symptom_or_category',
   ]);
 });
 
@@ -255,3 +260,268 @@ test('Deliverable 1 & 2: Location, stock, expiring, and calc_price questions map
     await db.close();
   }
 });
+
+test('Quick Access & AI Trends: returns "No recent sales trend available." when no 7d dispense data exists, and grounds Top 5 + insight strictly in SQL numbers', async () => {
+  const db = await createSeededTestDb();
+  try {
+    const repo = createRepository(db);
+    const refNow = '2026-10-25T12:00:00.000Z';
+
+    // 1. Fresh seeded DB has only initial_receipt movements (positive deltas), so 0 dispense rows
+    const emptyTrends = await generateQuickAccessAiTrends(db, {
+      referenceTimestamp: refNow,
+    });
+    assert.equal(emptyTrends.topDispensed.length, 0);
+    assert.equal(emptyTrends.insightText, NO_RECENT_SALES_TREND_MESSAGE);
+    assert.equal(emptyTrends.insightText, 'No recent sales trend available.');
+
+    // 2. Non-dispense negative movements (e.g. correction) or movements older than 7d do not count as current 7d dispenses
+    await repo.insertMovement({
+      medication_id: 1,
+      batch_id: 1,
+      delta: -15,
+      reason: 'correction:damaged_pack',
+      user_id: 'pharmacist:claire.dupont',
+      created_at: '2026-10-24T10:00:00.000Z',
+    });
+    const stillEmpty = await generateQuickAccessAiTrends(db, {
+      referenceTimestamp: refNow,
+    });
+    assert.equal(stillEmpty.topDispensed.length, 0);
+    assert.equal(stillEmpty.insightText, 'No recent sales trend available.');
+
+    // 3. Insert prior-week dispense (20 units of Amoxil #1 at -10 days) and current-week dispenses:
+    // - Amoxil (#1): -20 in prior week, -16 and -10 in current week (total 26 units -> +30% faster this week)
+    // - Doliprane (#5): -18 in current week
+    // - Lipitor (#4): -12 in current week
+    // - Lantus SoloStar (#3): -7 in current week
+    // - Ventolin HFA (#2): -4 in current week
+    // - Plus a 6th medication with -1 in current week (must be excluded by Top 5 limit)
+    const med6 = await repo.insertMedication({
+      brand_name: 'Zyrtec',
+      generic_name: 'Cetirizine',
+      strength: '10 mg',
+      dosage_form: 'Tablet',
+      zone: 'B',
+      shelf: 'B1',
+      bin: '02',
+      reorder_level: 10,
+    });
+    const batch6 = await repo.insertBatch({
+      medication_id: med6.id,
+      lot_number: 'ZYR-01',
+      quantity: 50,
+      expiry_date: '2028-01-01',
+    });
+
+    await repo.insertMovement({
+      medication_id: 1,
+      batch_id: 1,
+      delta: -20,
+      reason: 'dispense',
+      user_id: 'pharmacist:claire.dupont',
+      created_at: '2026-10-15T10:00:00.000Z', // 10 days before refNow (prior 7d window)
+    });
+    await repo.insertMovement({
+      medication_id: 1,
+      batch_id: 1,
+      delta: -16,
+      reason: 'dispense',
+      user_id: 'pharmacist:claire.dupont',
+      created_at: '2026-10-22T09:00:00.000Z',
+    });
+    await repo.insertMovement({
+      medication_id: 1,
+      batch_id: 1,
+      delta: -10,
+      reason: 'dispense',
+      user_id: 'pharmacist:claire.dupont',
+      created_at: '2026-10-24T14:00:00.000Z',
+    });
+    await repo.insertMovement({
+      medication_id: 5,
+      batch_id: 6,
+      delta: -18,
+      reason: 'dispense',
+      user_id: 'pharmacist:claire.dupont',
+      created_at: '2026-10-23T11:00:00.000Z',
+    });
+    await repo.insertMovement({
+      medication_id: 4,
+      batch_id: 5,
+      delta: -12,
+      reason: 'dispense',
+      user_id: 'pharmacist:claire.dupont',
+      created_at: '2026-10-23T15:00:00.000Z',
+    });
+    await repo.insertMovement({
+      medication_id: 3,
+      batch_id: 3,
+      delta: -7,
+      reason: 'dispense',
+      user_id: 'pharmacist:claire.dupont',
+      created_at: '2026-10-24T08:00:00.000Z',
+    });
+    await repo.insertMovement({
+      medication_id: 2,
+      batch_id: 2,
+      delta: -4,
+      reason: 'dispense',
+      user_id: 'pharmacist:claire.dupont',
+      created_at: '2026-10-24T16:00:00.000Z',
+    });
+    await repo.insertMovement({
+      medication_id: med6.id,
+      batch_id: batch6.id,
+      delta: -1,
+      reason: 'dispense',
+      user_id: 'pharmacist:claire.dupont',
+      created_at: '2026-10-24T17:00:00.000Z',
+    });
+
+    const populatedTrends = await generateQuickAccessAiTrends(db, {
+      referenceTimestamp: refNow,
+    });
+
+    // Top 5 Most Dispensed ordered by sum of negative dispense deltas over last 7 days
+    assert.equal(populatedTrends.topDispensed.length, 5);
+    assert.deepEqual(
+      populatedTrends.topDispensed.map((r) => ({
+        brand_name: r.brand_name,
+        dispensed_7d: r.dispensed_7d,
+      })),
+      [
+        { brand_name: 'Amoxil', dispensed_7d: 26 },
+        { brand_name: 'Doliprane', dispensed_7d: 18 },
+        { brand_name: 'Lipitor', dispensed_7d: 12 },
+        { brand_name: 'Lantus SoloStar', dispensed_7d: 7 },
+        { brand_name: 'Ventolin HFA', dispensed_7d: 4 },
+      ],
+    );
+
+    // Verify SQL week-over-week calculation: (26 - 20) / 20 = +30%
+    assert.equal(populatedTrends.topDispensed[0]?.dispensed_prev_7d, 20);
+    assert.equal(populatedTrends.topDispensed[0]?.pct_change_vs_prev_7d, 30);
+    assert.ok(
+      populatedTrends.insightText.includes('Amoxil is selling 30% faster this week'),
+      `Expected insight to mention "Amoxil is selling 30% faster this week", got: ${populatedTrends.insightText}`,
+    );
+    assert.ok(populatedTrends.insightText.includes('Consider reordering.'));
+    assert.equal(
+      verifyInsightNumbersGroundedInSql(populatedTrends.insightText, populatedTrends.topDispensed),
+      true,
+    );
+
+    // Any invented number not in SQL is rejected by verifyInsightNumbersGroundedInSql
+    assert.equal(
+      verifyInsightNumbersGroundedInSql(
+        'Amoxil is selling 999% faster this week.',
+        populatedTrends.topDispensed,
+      ),
+      false,
+    );
+  } finally {
+    await db.close();
+  }
+});
+
+test('Expanded Ask Assistant Toolset: get_revenue(date), list_expiring(days), and find_by_symptom_or_category(category)', async () => {
+  const db = await createSeededTestDb();
+  try {
+    const repo = createRepository(db);
+    const targetDate = '2026-10-26';
+
+    // 1. Before any dispenses on 2026-10-26, "How much did we sell today?" calls get_revenue and returns $0.00
+    const zeroRevTurn = await runAssistantTurn(db, 'How much did we sell today?', {
+      referenceDate: targetDate,
+    });
+    assert.equal(zeroRevTurn.status, 'ok');
+    assert.equal(zeroRevTurn.toolCalls.length, 1);
+    assert.equal(zeroRevTurn.toolCalls[0]?.name, 'get_revenue');
+    assert.equal(zeroRevTurn.toolCalls[0]?.args.date, targetDate);
+    assert.ok(zeroRevTurn.responseText.includes('$0.00'));
+    assert.ok(zeroRevTurn.responseText.includes('0 units'));
+
+    // 2. Record dispenses on 2026-10-26:
+    // - 2 packs of Amoxil (#1 @ $12.50 = 1250 cents) -> 2500 cents ($25.00)
+    // - 3 packs of Doliprane (#5 @ $3.50 = 350 cents) -> 1050 cents ($10.50)
+    // - 1 pack of Lantus SoloStar (#3 @ NULL price) -> price not entered (never coerced to 0)
+    // Total priced revenue = 3550 cents ($35.50), total units sold = 6 across 3 transactions
+    await repo.insertMovement({
+      medication_id: 1,
+      batch_id: 1,
+      delta: -2,
+      reason: 'dispense',
+      user_id: 'pharmacist:claire.dupont',
+      created_at: '2026-10-26T09:15:00.000Z',
+    });
+    await repo.insertMovement({
+      medication_id: 5,
+      batch_id: 6,
+      delta: -3,
+      reason: 'dispense:prescription',
+      user_id: 'pharmacist:claire.dupont',
+      created_at: '2026-10-26T11:30:00.000Z',
+    });
+    await repo.insertMovement({
+      medication_id: 3,
+      batch_id: 3,
+      delta: -1,
+      reason: 'dispense',
+      user_id: 'pharmacist:claire.dupont',
+      created_at: '2026-10-26T14:45:00.000Z',
+    });
+
+    const revTurn = await runAssistantTurn(db, 'How much did we sell today?', {
+      referenceDate: targetDate,
+    });
+    assert.equal(revTurn.status, 'ok');
+    assert.equal(revTurn.toolCalls[0]?.name, 'get_revenue');
+    assert.ok(revTurn.responseText.includes('$35.50'));
+    assert.ok(revTurn.responseText.includes('Amoxil'));
+    assert.ok(revTurn.responseText.includes('$25.00'));
+    assert.ok(revTurn.responseText.includes('Doliprane'));
+    assert.ok(revTurn.responseText.includes('$10.50'));
+    assert.ok(revTurn.responseText.includes('Lantus SoloStar'));
+    assert.ok(revTurn.responseText.toLowerCase().includes('price not entered'));
+
+    // 3. "What is expiring this month?" calls list_expiring(days)
+    const expiringTurn = await runAssistantTurn(db, 'What is expiring this month?', {
+      referenceDate: targetDate,
+    });
+    assert.equal(expiringTurn.status, 'ok');
+    assert.equal(expiringTurn.toolCalls[0]?.name, 'list_expiring');
+    assert.ok(expiringTurn.responseText.includes('Ventolin HFA'));
+    assert.ok(expiringTurn.responseText.includes('VEN-2026-02'));
+    assert.ok(expiringTurn.responseText.includes('2026-11-24'));
+
+    // 4. "Find Antibacterial medications" calls find_by_symptom_or_category("Antibacterial")
+    const categoryTurn = await runAssistantTurn(db, 'Find Antibacterial medications', {
+      referenceDate: targetDate,
+    });
+    assert.equal(categoryTurn.status, 'ok');
+    assert.equal(categoryTurn.toolCalls[0]?.name, 'find_by_symptom_or_category');
+    assert.equal(categoryTurn.toolCalls[0]?.args.category, 'Antibacterial');
+    assert.ok(categoryTurn.responseText.includes('Amoxil'));
+    assert.ok(categoryTurn.responseText.includes('Amoxicillin'));
+    assert.ok(categoryTurn.responseText.includes('Zone A · Shelf A1 · Bin 01'));
+
+    // 5. Unknown category returns 0 results and never invents a medication
+    const emptyCategoryTurn = await runAssistantTurn(
+      db,
+      'Find medications in category Antifungal',
+      { referenceDate: targetDate },
+    );
+    assert.equal(emptyCategoryTurn.status, 'ok');
+    assert.equal(emptyCategoryTurn.toolCalls[0]?.name, 'find_by_symptom_or_category');
+    assert.ok(
+      emptyCategoryTurn.responseText.includes(
+        'No medications found in the inventory matching category or symptom',
+      ),
+    );
+  } finally {
+    await db.close();
+  }
+});
+
+

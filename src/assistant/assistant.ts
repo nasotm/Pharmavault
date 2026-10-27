@@ -1,10 +1,13 @@
 import {
   queryExpiringSoonDashboard,
   queryLowStockDashboard,
+  queryTopDispensedMedications,
   type ExpiringBatchRow,
   type ExpiringMedicationGroup,
   type LowStockDashboardRow,
+  type TopDispensedMedicationRow,
 } from '../dashboards/operational-dashboards';
+export { queryTopDispensedMedications, type TopDispensedMedicationRow };
 import type { DatabasePort, SqlParam } from '../db/port';
 import {
   getMedicationById,
@@ -34,7 +37,11 @@ Never perform arithmetic yourself — always call calc_price.`;
 export const PHARMACY_ASSISTANT_SYSTEM_PROMPT = `${PHARMACY_ASSISTANT_VERBATIM_PROMPT}
 
 Additional operational rules:
-- You may only call the five read-only tools: search_medication, get_stock, list_low_stock, list_expiring, calc_price.
+- You may only call the read-only tools: search_medication, get_stock, list_low_stock, list_expiring, calc_price, get_revenue, find_by_symptom_or_category.
+- Use get_revenue(date) to calculate total sales revenue for a specific day (e.g. "today" or "YYYY-MM-DD").
+- Use list_expiring(days) to list medications expiring in N days (e.g. 30 or 31 for "this month").
+- Use find_by_symptom_or_category(category) to find medications by category or symptom (e.g. "Antibacterial").
+- Never invent data; only use tool results.
 - Never call or attempt any write function (setPrice, insertMovement, insertMedication, updateMedicationFromImport, updateMedicationLocalInventory, etc.).
 - When a user asks to edit, fix, populate, correct, or infer any catalog field (brand_name, generic_name, strength, dosage_form, atc_code, manufacturer, barcode) or modify stock/prices, decline clearly and state that catalog, stock, and price fields are not editable in the read-only assistant.`;
 
@@ -43,7 +50,9 @@ export type AllowedReadOnlyToolName =
   | 'get_stock'
   | 'list_low_stock'
   | 'list_expiring'
-  | 'calc_price';
+  | 'calc_price'
+  | 'get_revenue'
+  | 'find_by_symptom_or_category';
 
 /**
  * Deliverable 2 & 4: Strict allow-list of read-only tools.
@@ -55,6 +64,8 @@ export const ALLOWED_READ_ONLY_TOOLS: ReadonlySet<string> = new Set<AllowedReadO
   'list_low_stock',
   'list_expiring',
   'calc_price',
+  'get_revenue',
+  'find_by_symptom_or_category',
 ]);
 
 /**
@@ -155,6 +166,57 @@ export interface CalcPriceItemInput {
 export interface CalcPriceToolOutput {
   evaluation: CalculatorEvaluation;
   unresolved_queries: string[];
+}
+
+export interface GetRevenueLineItem {
+  medication_id: number;
+  brand_name: string;
+  generic_name: string | null;
+  strength: string | null;
+  dosage_form: string | null;
+  units_sold: number;
+  transaction_count: number;
+  unit_price_cents: number | null;
+  unit_price_display: string;
+  line_revenue_cents: number | null;
+  line_revenue_display: string;
+  currency: string;
+}
+
+export interface GetRevenueToolOutput {
+  date: string;
+  requested_date: string;
+  total_revenue_cents: number;
+  total_revenue_display: string;
+  total_units_sold: number;
+  transaction_count: number;
+  currency: string;
+  has_unpriced_dispenses: boolean;
+  unpriced_medications: string[];
+  items: GetRevenueLineItem[];
+}
+
+export interface CategoryMedicationHit {
+  id: number;
+  brand_name: string;
+  generic_name: string | null;
+  strength: string | null;
+  dosage_form: string | null;
+  category: string | null;
+  atc_code: string | null;
+  location: string;
+  location_note: string | null;
+  total_qty: number;
+  unit_price_cents: number | null;
+  unit_price_display: string;
+  currency: string;
+}
+
+export interface FindBySymptomOrCategoryToolOutput {
+  category: string;
+  matched_terms: string[];
+  count: number;
+  medications: CategoryMedicationHit[];
 }
 
 export interface AssistantToolCallRequest {
@@ -639,6 +701,41 @@ export async function executeGuardedToolCall(
           timestamp,
         };
       }
+
+      case 'get_revenue': {
+        const requestedDate =
+          args.date !== undefined && args.date !== null && String(args.date).trim() !== ''
+            ? String(args.date).trim()
+            : 'today';
+        const resolvedDate = resolveRevenueTargetDate(
+          requestedDate,
+          options.referenceDate ?? options.referenceTimestamp,
+        );
+        const output = await queryDailyRevenue(readOnlyDb, resolvedDate, requestedDate);
+        return {
+          id,
+          name: rawName,
+          args: { ...args, date: resolvedDate, requested_date: requestedDate },
+          allowed: true,
+          status: 'executed',
+          result: output,
+          timestamp,
+        };
+      }
+
+      case 'find_by_symptom_or_category': {
+        const category = String(args.category ?? args.symptom ?? '').trim();
+        const output = await queryMedicationsBySymptomOrCategory(readOnlyDb, category);
+        return {
+          id,
+          name: rawName,
+          args: { ...args, category },
+          allowed: true,
+          status: 'executed',
+          result: output,
+          timestamp,
+        };
+      }
     }
   } catch (err) {
     return {
@@ -652,6 +749,409 @@ export async function executeGuardedToolCall(
       timestamp,
     };
   }
+}
+
+/**
+ * Resolves a date argument ("today", "yesterday", or "YYYY-MM-DD") into a canonical YYYY-MM-DD date string.
+ */
+export function resolveRevenueTargetDate(
+  dateArg: unknown,
+  referenceDateOrTimestamp?: string,
+): string {
+  const refIso = (referenceDateOrTimestamp ?? new Date().toISOString()).slice(0, 10);
+  const raw = typeof dateArg === 'string' ? dateArg.trim().toLowerCase() : '';
+
+  if (!raw || raw === 'today' || raw === 'now') {
+    return refIso;
+  }
+
+  if (raw === 'yesterday') {
+    const baseDate = new Date(`${refIso}T12:00:00.000Z`);
+    if (!Number.isNaN(baseDate.getTime())) {
+      baseDate.setUTCDate(baseDate.getUTCDate() - 1);
+      return baseDate.toISOString().slice(0, 10);
+    }
+    return refIso;
+  }
+
+  const isoMatch = raw.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (isoMatch) {
+    return isoMatch[1];
+  }
+
+  return refIso;
+}
+
+const DAILY_REVENUE_SQL = `
+SELECT
+  m.id AS medication_id,
+  m.brand_name,
+  m.generic_name,
+  m.strength,
+  m.dosage_form,
+  m.unit_price_cents,
+  m.currency,
+  COALESCE(SUM(-sm.delta), 0) AS units_sold,
+  COUNT(sm.id) AS transaction_count,
+  CASE
+    WHEN m.unit_price_cents IS NOT NULL
+      THEN COALESCE(SUM(-sm.delta), 0) * m.unit_price_cents
+    ELSE NULL
+  END AS line_revenue_cents
+FROM stock_movement sm
+INNER JOIN medication m ON m.id = sm.medication_id
+WHERE sm.delta < 0
+  AND (
+    LOWER(TRIM(COALESCE(sm.reason, ''))) = 'dispense'
+    OR LOWER(TRIM(COALESCE(sm.reason, ''))) LIKE 'dispense:%'
+    OR LOWER(TRIM(COALESCE(sm.reason, ''))) LIKE '%dispense%'
+  )
+  AND date(sm.created_at) = date(?)
+GROUP BY m.id
+ORDER BY
+  COALESCE(line_revenue_cents, 0) DESC,
+  units_sold DESC,
+  m.brand_name ASC;
+`;
+
+interface RawDailyRevenueSqlRow {
+  medication_id: number;
+  brand_name: string;
+  generic_name: string | null;
+  strength: string | null;
+  dosage_form: string | null;
+  unit_price_cents: number | null;
+  currency: string | null;
+  units_sold: number;
+  transaction_count: number;
+  line_revenue_cents: number | null;
+}
+
+/**
+ * Deterministic SQL query for `get_revenue(date)`:
+ * Calculates total sales revenue and per-medication breakdown for a specific YYYY-MM-DD day
+ * strictly from `stock_movement` (dispense movements) and `medication.unit_price_cents`.
+ * Preserves NULL prices as "price not entered" and never substitutes 0 for an unentered price.
+ */
+export async function queryDailyRevenue(
+  db: DatabasePort,
+  resolvedDate: string,
+  requestedDate = resolvedDate,
+): Promise<GetRevenueToolOutput> {
+  const rows = await db.query<RawDailyRevenueSqlRow>(DAILY_REVENUE_SQL, [resolvedDate]);
+
+  let totalRevenueCents = 0;
+  let totalUnitsSold = 0;
+  let transactionCount = 0;
+  let currency = 'USD';
+  const unpricedMedications: string[] = [];
+
+  const items: GetRevenueLineItem[] = rows.map((row) => {
+    const unitsSold = Number(row.units_sold);
+    const txCount = Number(row.transaction_count);
+    const rowCurrency = row.currency ? String(row.currency) : 'USD';
+    currency = rowCurrency;
+
+    const unitPriceCents =
+      row.unit_price_cents === null || row.unit_price_cents === undefined
+        ? null
+        : Number(row.unit_price_cents);
+    const lineRevenueCents =
+      row.line_revenue_cents === null || row.line_revenue_cents === undefined
+        ? null
+        : Number(row.line_revenue_cents);
+
+    totalUnitsSold += unitsSold;
+    transactionCount += txCount;
+
+    if (lineRevenueCents !== null) {
+      totalRevenueCents += lineRevenueCents;
+    } else {
+      unpricedMedications.push(String(row.brand_name));
+    }
+
+    return {
+      medication_id: Number(row.medication_id),
+      brand_name: String(row.brand_name),
+      generic_name:
+        row.generic_name === null || row.generic_name === undefined
+          ? null
+          : String(row.generic_name),
+      strength: row.strength === null || row.strength === undefined ? null : String(row.strength),
+      dosage_form:
+        row.dosage_form === null || row.dosage_form === undefined ? null : String(row.dosage_form),
+      units_sold: unitsSold,
+      transaction_count: txCount,
+      unit_price_cents: unitPriceCents,
+      unit_price_display:
+        unitPriceCents === null
+          ? 'price not entered'
+          : formatMoneyDisplay(unitPriceCents, rowCurrency, { includeCentsSuffix: false }),
+      line_revenue_cents: lineRevenueCents,
+      line_revenue_display:
+        lineRevenueCents === null
+          ? 'price not entered'
+          : formatMoneyDisplay(lineRevenueCents, rowCurrency, { includeCentsSuffix: false }),
+      currency: rowCurrency,
+    };
+  });
+
+  return {
+    date: resolvedDate,
+    requested_date: requestedDate,
+    total_revenue_cents: totalRevenueCents,
+    total_revenue_display: formatMoneyDisplay(totalRevenueCents, currency, {
+      includeCentsSuffix: false,
+    }),
+    total_units_sold: totalUnitsSold,
+    transaction_count: transactionCount,
+    currency,
+    has_unpriced_dispenses: unpricedMedications.length > 0,
+    unpriced_medications: unpricedMedications,
+    items,
+  };
+}
+
+const SYMPTOM_OR_CATEGORY_SYNONYMS: readonly {
+  triggers: readonly string[];
+  categoryKeywords: readonly string[];
+  atcPrefixes: readonly string[];
+}[] = [
+  {
+    triggers: [
+      'antibacterial',
+      'antibacterials',
+      'antibiotic',
+      'antibiotics',
+      'anti-bacterial',
+      'anti-infective',
+      'infection',
+      'bacterial',
+      'antimicrobial',
+    ],
+    categoryKeywords: ['antibacterial', 'antibiotic'],
+    atcPrefixes: ['J01'],
+  },
+  {
+    triggers: [
+      'analgesic',
+      'analgesics',
+      'antipyretic',
+      'antipyretics',
+      'pain',
+      'painkiller',
+      'painkillers',
+      'fever',
+      'headache',
+      'ache',
+      'anti-inflammatory',
+    ],
+    categoryKeywords: ['analgesic', 'antipyretic', 'anti-inflammatory'],
+    atcPrefixes: ['N02', 'M01'],
+  },
+  {
+    triggers: [
+      'bronchodilator',
+      'bronchodilators',
+      'asthma',
+      'respiratory',
+      'breathing',
+      'wheezing',
+      'inhaler',
+      'copd',
+    ],
+    categoryKeywords: ['bronchodilator', 'respiratory'],
+    atcPrefixes: ['R03'],
+  },
+  {
+    triggers: [
+      'antidiabetic',
+      'antidiabetics',
+      'diabetes',
+      'diabetic',
+      'insulin',
+      'basal insulin',
+      'blood sugar',
+      'glucose',
+    ],
+    categoryKeywords: ['antidiabetic', 'insulin'],
+    atcPrefixes: ['A10'],
+  },
+  {
+    triggers: [
+      'lipid',
+      'lipid-modifying',
+      'cholesterol',
+      'statin',
+      'statins',
+      'cardiovascular',
+      'heart',
+      'hypertension',
+      'blood pressure',
+    ],
+    categoryKeywords: ['lipid', 'cardiovascular'],
+    atcPrefixes: ['C10', 'C07', 'C09'],
+  },
+];
+
+/**
+ * Expands a category or symptom query (e.g. "Antibacterial") into deterministic SQL category
+ * substrings and ATC prefixes so related catalog records (e.g. "Antibiotic" / ATC J01) are matched.
+ */
+export function expandCategoryOrSymptomTerms(rawCategory: string): {
+  cleanedCategory: string;
+  matchedTerms: string[];
+  atcPrefixes: string[];
+} {
+  const cleanedCategory = rawCategory.trim().replace(/[?!.,;]+$/g, '').trim();
+  const lower = cleanedCategory.toLowerCase();
+
+  if (!lower) {
+    return { cleanedCategory: '', matchedTerms: [], atcPrefixes: [] };
+  }
+
+  const matchedTerms = new Set<string>([lower]);
+  const atcPrefixes = new Set<string>();
+
+  for (const group of SYMPTOM_OR_CATEGORY_SYNONYMS) {
+    const matchedGroup = group.triggers.some(
+      (trigger) => lower === trigger || lower.includes(trigger) || trigger.includes(lower),
+    );
+    if (matchedGroup) {
+      for (const kw of group.categoryKeywords) {
+        matchedTerms.add(kw);
+      }
+      for (const prefix of group.atcPrefixes) {
+        atcPrefixes.add(prefix.toUpperCase());
+      }
+    }
+  }
+
+  return {
+    cleanedCategory,
+    matchedTerms: Array.from(matchedTerms),
+    atcPrefixes: Array.from(atcPrefixes),
+  };
+}
+
+interface RawCategoryMedicationSqlRow {
+  id: number;
+  brand_name: string;
+  generic_name: string | null;
+  strength: string | null;
+  dosage_form: string | null;
+  category: string | null;
+  atc_code: string | null;
+  zone: string | null;
+  shelf: string | null;
+  bin: string | null;
+  location_note: string | null;
+  unit_price_cents: number | null;
+  currency: string | null;
+  total_qty: number;
+}
+
+/**
+ * Deterministic SQL query for `find_by_symptom_or_category(category)`:
+ * Finds medications matching the requested category or symptom strictly from SQLite.
+ */
+export async function queryMedicationsBySymptomOrCategory(
+  db: DatabasePort,
+  rawCategory: string,
+): Promise<FindBySymptomOrCategoryToolOutput> {
+  const { cleanedCategory, matchedTerms, atcPrefixes } = expandCategoryOrSymptomTerms(rawCategory);
+
+  if (!cleanedCategory || matchedTerms.length === 0) {
+    return {
+      category: rawCategory.trim(),
+      matched_terms: [],
+      count: 0,
+      medications: [],
+    };
+  }
+
+  const predicates: string[] = [];
+  const params: SqlParam[] = [];
+
+  for (const term of matchedTerms) {
+    const likePattern = `%${term}%`;
+    predicates.push('LOWER(COALESCE(m.category, \'\')) LIKE ?');
+    params.push(likePattern);
+    predicates.push('LOWER(COALESCE(m.location_note, \'\')) LIKE ?');
+    params.push(likePattern);
+  }
+
+  for (const prefix of atcPrefixes) {
+    predicates.push('UPPER(COALESCE(m.atc_code, \'\')) LIKE ?');
+    params.push(`${prefix}%`);
+  }
+
+  const sql = `
+    SELECT
+      m.id,
+      m.brand_name,
+      m.generic_name,
+      m.strength,
+      m.dosage_form,
+      m.category,
+      m.atc_code,
+      m.zone,
+      m.shelf,
+      m.bin,
+      m.location_note,
+      m.unit_price_cents,
+      m.currency,
+      COALESCE(SUM(b.quantity), 0) AS total_qty
+    FROM medication m
+    LEFT JOIN batch b ON b.medication_id = m.id
+    WHERE (${predicates.join(' OR ')})
+    GROUP BY m.id
+    ORDER BY m.brand_name ASC, m.id ASC
+    LIMIT 25;
+  `;
+
+  const rows = await db.query<RawCategoryMedicationSqlRow>(sql, params);
+
+  const medications: CategoryMedicationHit[] = rows.map((row) => {
+    const currency = row.currency ? String(row.currency) : 'USD';
+    const unitPriceCents =
+      row.unit_price_cents === null || row.unit_price_cents === undefined
+        ? null
+        : Number(row.unit_price_cents);
+
+    return {
+      id: Number(row.id),
+      brand_name: String(row.brand_name),
+      generic_name:
+        row.generic_name === null || row.generic_name === undefined
+          ? null
+          : String(row.generic_name),
+      strength: row.strength === null || row.strength === undefined ? null : String(row.strength),
+      dosage_form:
+        row.dosage_form === null || row.dosage_form === undefined ? null : String(row.dosage_form),
+      category: row.category === null || row.category === undefined ? null : String(row.category),
+      atc_code: row.atc_code === null || row.atc_code === undefined ? null : String(row.atc_code),
+      location: formatLocationString({ zone: row.zone, shelf: row.shelf, bin: row.bin }),
+      location_note:
+        row.location_note === null || row.location_note === undefined
+          ? null
+          : String(row.location_note),
+      total_qty: Number(row.total_qty),
+      unit_price_cents: unitPriceCents,
+      unit_price_display:
+        unitPriceCents === null
+          ? 'price not entered'
+          : formatMoneyDisplay(unitPriceCents, currency, { includeCentsSuffix: true }),
+      currency,
+    };
+  });
+
+  return {
+    category: cleanedCategory,
+    matched_terms: matchedTerms,
+    count: medications.length,
+    medications,
+  };
 }
 
 /**
@@ -728,8 +1228,49 @@ export function extractMedicationQueryFromPrompt(
 }
 
 /**
- * Deterministic tool planner that maps natural language questions to the 5 read-only tools.
- * Used both as a fallback when no external Gemini key is configured and to guarantee tool calls.
+ * Extracts a category or symptom query from natural language questions such as
+ * "Find Antibacterial medications", "What do we have in category Antibacterial?",
+ * or "What medications do we have for pain or fever?".
+ */
+export function extractCategoryOrSymptomFromPrompt(prompt: string): string | null {
+  const cleaned = prompt.replace(/[?!.,;]+$/g, '').trim();
+
+  // 1. Explicit "category <X>" or "by category: <X>" or "symptom <X>"
+  const explicitMatch = cleaned.match(
+    /\b(?:by\s+category|in\s+category|category|by\s+symptom|symptom)\s*[:=]?\s*["']?([a-z0-9\s/-]+?)["']?(?:\s+(?:medications?|drugs?|items?|products?))?$/i,
+  );
+  if (explicitMatch && explicitMatch[1]?.trim()) {
+    return explicitMatch[1].trim();
+  }
+
+  // 2. Known clinical categories or symptom keywords
+  const categoryKeywordMatch = cleaned.match(
+    /\b(antibacterials?|antibiotics?|anti-bacterials?|analgesics?|antipyretics?|bronchodilators?|antidiabetics?|lipid-modifying(?:\s+agents?)?|cardiovascular|respiratory|dermatology|gastrointestinal|neurology|musculoskeletal|ophthalmology|anti-inflammatory|painkillers?)\b/i,
+  );
+  if (categoryKeywordMatch && categoryKeywordMatch[1]) {
+    return categoryKeywordMatch[1].trim();
+  }
+
+  // 3. Symptom phrasing: "medications for <symptom>", "what do we have for <symptom>", "treat <symptom>"
+  const symptomPhraseMatch = cleaned.match(
+    /\b(?:medications?\s+for|drugs?\s+for|what\s+(?:do\s+we\s+have|is\s+available|medications?)\s+for|used\s+for|to\s+treat|for\s+treating)\s+["']?([a-z\s-]+?)["']?$/i,
+  );
+  if (symptomPhraseMatch && symptomPhraseMatch[1]?.trim()) {
+    return symptomPhraseMatch[1].trim();
+  }
+
+  return null;
+}
+
+/**
+ * Deterministic tool planner that maps natural language questions to the read-only tools:
+ * - `search_medication`
+ * - `get_stock`
+ * - `list_low_stock`
+ * - `list_expiring`
+ * - `calc_price`
+ * - `get_revenue`
+ * - `find_by_symptom_or_category`
  */
 export function planReadOnlyToolCalls(
   userMessage: string,
@@ -746,12 +1287,32 @@ export function planReadOnlyToolCalls(
     return [];
   }
 
-  // 2. Low stock queries ("what's running low", "low stock", "reorder")
-  if (/\b(running\s+low|low\s+stock|low-stock|need\s+to\s+reorder|below\s+reorder|out\s+of\s+stock|shortage)\b/i.test(lower)) {
+  // 2. Revenue / daily sales queries ("How much did we sell today?", "What is our revenue for 2026-10-26?")
+  if (
+    /\b(revenue|total\s+sales|daily\s+sales|sales\s+today|sales\s+yesterday|sales\s+for|sales\s+on|how\s+much\s+did\s+we\s+sell|what\s+did\s+we\s+sell|how\s+much\s+have\s+we\s+sold|how\s+much\s+was\s+sold|sold\s+today|sold\s+yesterday|sell\s+today|sell\s+yesterday|sell\s+on)\b/i.test(
+      lower,
+    )
+  ) {
+    const explicitDateMatch = lower.match(/\b(\d{4}-\d{2}-\d{2})\b/);
+    let dateArg = 'today';
+    if (explicitDateMatch) {
+      dateArg = explicitDateMatch[1];
+    } else if (/\byesterday\b/i.test(lower)) {
+      dateArg = 'yesterday';
+    }
+    return [{ name: 'get_revenue', args: { date: dateArg } }];
+  }
+
+  // 3. Low stock queries ("what's running low", "low stock", "reorder")
+  if (
+    /\b(running\s+low|low\s+stock|low-stock|need\s+to\s+reorder|below\s+reorder|out\s+of\s+stock|shortage)\b/i.test(
+      lower,
+    )
+  ) {
     return [{ name: 'list_low_stock', args: {} }];
   }
 
-  // 3. Expiring queries ("what expires this month", "expiring soon", "expires in 60 days")
+  // 4. Expiring queries ("What is expiring this month?", "what expires this month", "expiring in 60 days")
   if (/\b(expir(?:e|es|ing)|this\s+month|next\s+month|soon\s+to\s+expire)\b/i.test(lower)) {
     let days = 90;
     const daysMatch = lower.match(/\b(\d+)\s*days?\b/);
@@ -761,17 +1322,23 @@ export function planReadOnlyToolCalls(
       days = 31;
     } else if (/\bthis\s+week\b/i.test(lower)) {
       days = 7;
-    } else if (/\b60\s*days?\b|\btwo\s+months?\b/i.test(lower)) {
+    } else if (/\b60\s*days?\b|\btwo\s+months?\b|\bnext\s+month\b/i.test(lower)) {
       days = 60;
     }
     return [{ name: 'list_expiring', args: { days } }];
   }
 
-  // 4. Price calculation / "how much" queries
-  if (
-    /\b(how\s+much|price|cost|total|calculate|calc|discount|%\s*off|tax)\b/i.test(lower)
-  ) {
-    const qtyMatch = lower.match(/\b(\d+)\s*(?:boxes|box|packs|pack|units|unit|pens|pen|bottles|vials|x|of)\b/i);
+  // 5. Symptom or category queries ("Find Antibacterial medications", "Medications by category Antibacterial")
+  const categoryQuery = extractCategoryOrSymptomFromPrompt(userMessage);
+  if (categoryQuery) {
+    return [{ name: 'find_by_symptom_or_category', args: { category: categoryQuery } }];
+  }
+
+  // 6. Price calculation / "how much" queries
+  if (/\b(how\s+much|price|cost|total|calculate|calc|discount|%\s*off|tax)\b/i.test(lower)) {
+    const qtyMatch = lower.match(
+      /\b(\d+)\s*(?:boxes|box|packs|pack|units|unit|pens|pen|bottles|vials|x|of)\b/i,
+    );
     const quantity = qtyMatch ? Number(qtyMatch[1]) : 1;
 
     const discountMatch =
@@ -815,7 +1382,7 @@ export function planReadOnlyToolCalls(
     ];
   }
 
-  // 5. Location / stock lookup ("where are the amoxicillin capsules", "how many amoxil", etc.)
+  // 7. Location / stock lookup ("where are the amoxicillin capsules", "how many amoxil", etc.)
   const medQuery = extractMedicationQueryFromPrompt(userMessage, options.contextMedicationName);
   return [
     {
@@ -827,7 +1394,7 @@ export function planReadOnlyToolCalls(
 
 /**
  * Formats a grounded, deterministic response strictly from the executed read-only tool calls.
- * Never invents a price, stock level, location, or expiry date.
+ * Never invents a price, stock level, location, revenue figure, or expiry date.
  * Surfaces NULL prices as "price not entered" — never 0.
  */
 export function synthesizeGroundedResponseFromTools(
@@ -855,7 +1422,43 @@ export function synthesizeGroundedResponseFromTools(
       continue;
     }
 
-    if (call.name === 'list_low_stock') {
+    if (call.name === 'get_revenue') {
+      const output = call.result as GetRevenueToolOutput;
+      if (output.items.length === 0) {
+        parts.push(
+          `Total sales revenue for **${output.date}** is **${output.total_revenue_display}** (**0 units** dispensed across **0 transactions**).`,
+        );
+      } else {
+        const itemLines = output.items.map((item) => {
+          if (item.unit_price_cents === null || item.line_revenue_cents === null) {
+            return `- **${item.brand_name}** (${item.strength ?? ''}): **${item.units_sold} units** dispensed — **price not entered** (\`unit_price_cents = NULL\`)`;
+          }
+          return `- **${item.brand_name}** (${item.strength ?? ''}): **${item.units_sold} units** × ${item.unit_price_display} = **${item.line_revenue_display}**`;
+        });
+        const unpricedWarning = output.has_unpriced_dispenses
+          ? `\nNote: ${output.unpriced_medications.join(', ')} has **price not entered** and is excluded from the priced revenue sum.`
+          : '';
+        parts.push(
+          `Total sales revenue for **${output.date}**: **${output.total_revenue_display}** (**${output.total_units_sold} units** sold across **${output.transaction_count} dispense transaction(s)**):\n${itemLines.join('\n')}${unpricedWarning}`,
+        );
+      }
+    } else if (call.name === 'find_by_symptom_or_category') {
+      const output = call.result as FindBySymptomOrCategoryToolOutput;
+      if (output.medications.length === 0) {
+        parts.push(
+          `No medications found in the inventory matching category or symptom "${output.category}".`,
+        );
+      } else {
+        const lines = output.medications.map((med) => {
+          const priceLabel =
+            med.unit_price_cents === null ? 'price not entered' : med.unit_price_display;
+          return `- **${med.brand_name}** (${med.generic_name ?? 'N/A'} · ${med.strength ?? ''} · ${med.dosage_form ?? ''}) — Category: **${med.category ?? 'Uncategorized'}** (ATC \`${med.atc_code ?? 'N/A'}\`) · Location: **${med.location}** · Stock: **${med.total_qty} units** · Price: **${priceLabel}**`;
+        });
+        parts.push(
+          `Found **${output.count}** medication(s) matching category/symptom "**${output.category}**":\n${lines.join('\n')}`,
+        );
+      }
+    } else if (call.name === 'list_low_stock') {
       const output = call.result as ListLowStockToolOutput;
       if (output.rows.length === 0) {
         parts.push('No medications are currently at or below their reorder level.');
@@ -914,14 +1517,20 @@ export function synthesizeGroundedResponseFromTools(
         );
       }
     } else if (call.name === 'get_stock') {
+      const maybeTrends = call.result as { top_dispensed?: TopDispensedMedicationRow[] };
+      if (Array.isArray(maybeTrends.top_dispensed)) {
+        parts.push(synthesizeDispenseTrendInsight(maybeTrends.top_dispensed));
+        continue;
+      }
       const output = call.result as GetStockToolOutput & { found?: boolean; error?: string };
       if (output.found === false) {
         parts.push(output.error ?? 'Medication not found.');
         continue;
       }
+      const batches = Array.isArray(output.batches) ? output.batches : [];
       const batchLines =
-        output.batches.length > 0
-          ? output.batches
+        batches.length > 0
+          ? batches
               .map(
                 (b) =>
                   `Lot \`${b.lot_number ?? 'N/A'}\`: ${b.quantity} units (expires ${b.expiry_date ?? 'N/A'})`,
@@ -1250,3 +1859,198 @@ export async function runAssistantTurn(
     logEntry,
   };
 }
+
+export const NO_RECENT_SALES_TREND_MESSAGE = 'No recent sales trend available.';
+
+export interface QuickAccessAiTrendsOptions {
+  referenceTimestamp?: string;
+  limit?: number;
+  useRemoteModelEndpoint?: boolean;
+}
+
+export interface QuickAccessAiTrendsResult {
+  topDispensed: TopDispensedMedicationRow[];
+  insightText: string;
+  isGrounded: boolean;
+}
+
+/**
+ * Verifies that every numeric token appearing in an AI trend insight exists in the
+ * SQL query results for `topDispensed`, ensuring the AI cannot invent any number.
+ */
+export function verifyInsightNumbersGroundedInSql(
+  insightText: string,
+  rows: readonly TopDispensedMedicationRow[],
+): boolean {
+  if (rows.length === 0) {
+    return insightText.trim() === NO_RECENT_SALES_TREND_MESSAGE;
+  }
+
+  const allowedNumbers = new Set<number>([7]);
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    allowedNumbers.add(i + 1);
+    allowedNumbers.add(r.medication_id);
+    allowedNumbers.add(r.dispensed_7d);
+    allowedNumbers.add(r.dispense_count_7d);
+    allowedNumbers.add(r.dispensed_prev_7d);
+    allowedNumbers.add(r.current_qty);
+    allowedNumbers.add(r.reorder_level);
+    if (r.pct_change_vs_prev_7d !== null) {
+      allowedNumbers.add(Math.abs(Math.round(r.pct_change_vs_prev_7d)));
+      allowedNumbers.add(Math.round(r.pct_change_vs_prev_7d));
+    }
+  }
+
+  // Strip medication strength tokens (e.g. "500 mg", "1000 mg") before checking standalone numbers
+  let scrubbed = insightText;
+  for (const r of rows) {
+    if (r.strength) {
+      scrubbed = scrubbed.split(r.strength).join('');
+    }
+    scrubbed = scrubbed.split(r.brand_name).join('');
+  }
+
+  const numberMatches = scrubbed.match(/\b\d+(?:\.\d+)?\b/g);
+  if (!numberMatches || numberMatches.length === 0) {
+    return false;
+  }
+
+  for (const rawNum of numberMatches) {
+    const parsed = Number(rawNum);
+    if (!allowedNumbers.has(parsed)) {
+      return false;
+    }
+  }
+
+  return rows.some((r) => insightText.toLowerCase().includes(r.brand_name.toLowerCase()));
+}
+
+/**
+ * Deterministically synthesizes a dynamic text insight strictly from the SQL numbers
+ * returned by `queryTopDispensedMedications`.
+ * If there is not enough data (no dispense movements in the last 7 days), returns
+ * `"No recent sales trend available."`.
+ */
+export function synthesizeDispenseTrendInsight(
+  rows: readonly TopDispensedMedicationRow[],
+): string {
+  const validRows = rows.filter((r) => r.dispensed_7d > 0);
+  if (validRows.length === 0) {
+    return NO_RECENT_SALES_TREND_MESSAGE;
+  }
+
+  // Prefer the top medication that has a week-over-week SQL percentage comparison if available,
+  // otherwise use the #1 most dispensed medication in the last 7 days.
+  const trendTarget =
+    validRows.find((r) => r.pct_change_vs_prev_7d !== null && r.pct_change_vs_prev_7d !== 0) ??
+    validRows[0];
+
+  if (trendTarget.pct_change_vs_prev_7d !== null) {
+    const pct = Math.round(trendTarget.pct_change_vs_prev_7d);
+    if (pct > 0) {
+      const reorderNote =
+        trendTarget.current_qty <= trendTarget.reorder_level || pct >= 20
+          ? ' Consider reordering.'
+          : '';
+      return `${trendTarget.brand_name} is selling ${pct}% faster this week (${trendTarget.dispensed_7d} units dispensed vs. ${trendTarget.dispensed_prev_7d} last week; ${trendTarget.current_qty} in stock).${reorderNote}`;
+    }
+    if (pct < 0) {
+      const absPct = Math.abs(pct);
+      const reorderNote =
+        trendTarget.current_qty <= trendTarget.reorder_level ? ' Consider reordering.' : '';
+      return `${trendTarget.brand_name} is selling ${absPct}% slower this week (${trendTarget.dispensed_7d} units dispensed vs. ${trendTarget.dispensed_prev_7d} last week; ${trendTarget.current_qty} in stock).${reorderNote}`;
+    }
+    const reorderNote =
+      trendTarget.current_qty <= trendTarget.reorder_level ? ' Consider reordering.' : '';
+    return `${trendTarget.brand_name} is selling at a steady pace this week (${trendTarget.dispensed_7d} units dispensed vs. ${trendTarget.dispensed_prev_7d} last week; ${trendTarget.current_qty} in stock).${reorderNote}`;
+  }
+
+  const reorderNote =
+    trendTarget.current_qty <= trendTarget.reorder_level
+      ? ' Consider reordering.'
+      : '';
+  return `${trendTarget.brand_name} leads weekly dispensing with ${trendTarget.dispensed_7d} units dispensed in the last 7 days (${trendTarget.current_qty} units in stock, reorder level ${trendTarget.reorder_level}).${reorderNote}`;
+}
+
+/**
+ * Uses the read-only AI Assistant guard and synthesis pipeline to generate the
+ * "Quick Access & AI Trends" data and dynamic text insight from `stock_movement`.
+ *
+ * - Strictly reads numbers from SQL via `createReadOnlyDatabaseGuard(db)`.
+ * - Never invents data.
+ * - Returns `"No recent sales trend available."` when there is not enough data.
+ */
+export async function generateQuickAccessAiTrends(
+  db: DatabasePort,
+  options: QuickAccessAiTrendsOptions = {},
+): Promise<QuickAccessAiTrendsResult> {
+  const readOnlyDb = createReadOnlyDatabaseGuard(db);
+  const topDispensed = await queryTopDispensedMedications(readOnlyDb, {
+    referenceTimestamp: options.referenceTimestamp,
+    limit: options.limit ?? 5,
+  });
+
+  if (topDispensed.length === 0) {
+    return {
+      topDispensed: [],
+      insightText: NO_RECENT_SALES_TREND_MESSAGE,
+      isGrounded: true,
+    };
+  }
+
+  const deterministicInsight = synthesizeDispenseTrendInsight(topDispensed);
+
+  if (options.useRemoteModelEndpoint && typeof fetch === 'function') {
+    try {
+      const syntheticToolRecord: ExecutedToolCallRecord = {
+        id: `tc_trends_${Date.now()}`,
+        name: 'get_stock',
+        args: { source: 'stock_movement_7d_dispense_trends' },
+        allowed: true,
+        status: 'executed',
+        result: {
+          window_days: 7,
+          top_dispensed: topDispensed,
+        },
+        timestamp: new Date().toISOString(),
+      };
+
+      const res = await fetch('/api/ai/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mode: 'synthesize',
+          userMessage:
+            'Provide a single concise 1-2 sentence pharmacy sales trend insight using ONLY the exact numbers in top_dispensed (brand_name, dispensed_7d, dispensed_prev_7d, pct_change_vs_prev_7d, current_qty, reorder_level). Do not invent or calculate any numbers.',
+          toolCalls: [syntheticToolRecord],
+        }),
+      });
+
+      if (res.ok) {
+        const data = (await res.json()) as { responseText?: string; usedFallback?: boolean };
+        const candidate = data.responseText?.trim() ?? '';
+        if (
+          candidate &&
+          !data.usedFallback &&
+          verifyInsightNumbersGroundedInSql(candidate, topDispensed)
+        ) {
+          return {
+            topDispensed,
+            insightText: candidate,
+            isGrounded: true,
+          };
+        }
+      }
+    } catch {
+      // Fall back to deterministic SQL-grounded insight
+    }
+  }
+
+  return {
+    topDispensed,
+    insightText: deterministicInsight,
+    isGrounded: true,
+  };
+}
+

@@ -53,7 +53,7 @@ export function StockMovementPanel({
   // Dispense state
   const [dispenseBatchSelection, setDispenseBatchSelection] = useState<string>('FEFO_AUTO');
   const [dispenseQuantity, setDispenseQuantity] = useState<string>('3');
-  const [dispenseReason, setDispenseReason] = useState<string>('Prescription dispense');
+  const [dispenseReason, setDispenseReason] = useState<string>('dispense');
 
   // Receive state
   const [receiveMode, setReceiveMode] = useState<ReceiveBatchMode>('new_batch');
@@ -118,7 +118,7 @@ export function StockMovementPanel({
         medicationId,
         batchId: manualBatchId,
         quantity: parsedQty,
-        reason: dispenseReason.trim() || 'Prescription dispense',
+        reason: dispenseReason.trim() || 'dispense',
         userId: activeUserString,
       });
 

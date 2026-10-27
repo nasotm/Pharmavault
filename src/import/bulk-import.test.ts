@@ -218,3 +218,68 @@ test('Bulk Import Logic & Acceptance Scenario (50-row pharmacy CSV + 10-row tari
     await db2.close();
   }
 });
+
+test('Medical Information columns: SQLite schema, manual updateMedicationMedicalInfo, and CSV importer support for all 8 fields', async () => {
+  const db = await SqliteWasmAdapter.create({ filename: ':memory:' });
+  try {
+    await runMigrations(db);
+    const repo = createRepository(db);
+
+    const csvWithMedicalColumns = [
+      'brand_name,generic_name,strength,dosage_form,barcode,posology,interactions,composition,therapeutic_class,indications,precautions,route,side_effects,quantity,unit_price_cents',
+      '"Amlor","Amlodipine","5 mg","Capsule","3400939991112","1 capsule once daily in the morning","CYP3A4 inhibitors, Dantrolene, Simvastatin (>20mg)","Active: Amlodipine besilate 6.93 mg (eq. 5 mg amlodipine). Excipients: Corn starch, lactose","Antihypertensive (Calcium Channel Blocker)","Hypertension and chronic stable or vasospastic angina","Use with caution in hepatic impairment and heart failure","Oral","Peripheral edema, flushing, headache, palpitations, fatigue","40","850"',
+    ].join('\n');
+
+    const parsed = parseCsvDocument(csvWithMedicalColumns, { hasHeaderRow: true });
+    const mapping = autoSuggestColumnMapping(parsed.columns);
+
+    // Verify all 8 medical columns are automatically mapped by header name
+    assert.equal(typeof mapping.posology, 'number');
+    assert.equal(typeof mapping.interactions, 'number');
+    assert.equal(typeof mapping.composition, 'number');
+    assert.equal(typeof mapping.therapeutic_class, 'number');
+    assert.equal(typeof mapping.indications, 'number');
+    assert.equal(typeof mapping.precautions, 'number');
+    assert.equal(typeof mapping.route, 'number');
+    assert.equal(typeof mapping.side_effects, 'number');
+
+    const importRes = await executeBulkImport(db, {
+      parsedCsv: parsed,
+      mapping,
+      sourceType: 'pharmacy_spreadsheet',
+      dryRun: false,
+    });
+    assert.equal(importRes.errorCount, 0);
+    assert.equal(importRes.insertedMedicationCount, 1);
+
+    const amlor = (await repo.getMedicationByBarcode('3400939991112'))!;
+    assert.ok(amlor);
+    assert.equal(amlor.posology, '1 capsule once daily in the morning');
+    assert.equal(amlor.interactions, 'CYP3A4 inhibitors, Dantrolene, Simvastatin (>20mg)');
+    assert.equal(
+      amlor.composition,
+      'Active: Amlodipine besilate 6.93 mg (eq. 5 mg amlodipine). Excipients: Corn starch, lactose',
+    );
+    assert.equal(amlor.therapeutic_class, 'Antihypertensive (Calcium Channel Blocker)');
+    assert.equal(amlor.indications, 'Hypertension and chronic stable or vasospastic angina');
+    assert.equal(amlor.precautions, 'Use with caution in hepatic impairment and heart failure');
+    assert.equal(amlor.route, 'Oral');
+    assert.equal(amlor.side_effects, 'Peripheral edema, flushing, headache, palpitations, fatigue');
+
+    // Manual update via updateMedicationMedicalInfo
+    const updated = await repo.updateMedicationMedicalInfo(amlor.id, {
+      posology: '5 mg once daily; may increase to max 10 mg once daily',
+      route: 'Oral (Capsule)',
+      side_effects: 'Ankle edema, headache, flushing',
+    });
+    assert.equal(updated.posology, '5 mg once daily; may increase to max 10 mg once daily');
+    assert.equal(updated.route, 'Oral (Capsule)');
+    assert.equal(updated.side_effects, 'Ankle edema, headache, flushing');
+    // Unchanged fields are preserved
+    assert.equal(updated.therapeutic_class, 'Antihypertensive (Calcium Channel Blocker)');
+    assert.equal(updated.indications, 'Hypertension and chronic stable or vasospastic angina');
+  } finally {
+    await db.close();
+  }
+});
+

@@ -24,6 +24,26 @@ import type { DatabasePort, SqlParam } from './port';
 
 export type PriceSource = 'manual' | 'official_tariff' | 'imported';
 
+export interface CurrencyRecord {
+  code: string;
+  name: string;
+  symbol: string;
+  rate_to_da: number;
+}
+
+export const DEFAULT_CURRENCIES: readonly CurrencyRecord[] = [
+  { code: 'DZD', name: 'Algerian Dinar', symbol: 'DA', rate_to_da: 1 },
+  { code: 'EUR', name: 'Euro', symbol: '€', rate_to_da: 146.5 },
+  { code: 'USD', name: 'US Dollar', symbol: '$', rate_to_da: 134.5 },
+  { code: 'GBP', name: 'British Pound', symbol: '£', rate_to_da: 171.0 },
+  { code: 'CAD', name: 'Canadian Dollar', symbol: 'CA$', rate_to_da: 98.5 },
+  { code: 'CHF', name: 'Swiss Franc', symbol: 'CHF', rate_to_da: 152.0 },
+  { code: 'CNY', name: 'Chinese Yuan', symbol: '¥', rate_to_da: 18.8 },
+  { code: 'TRY', name: 'Turkish Lira', symbol: '₺', rate_to_da: 4.1 },
+  { code: 'AED', name: 'UAE Dirham', symbol: 'AED', rate_to_da: 36.6 },
+  { code: 'SAR', name: 'Saudi Riyal', symbol: 'SAR', rate_to_da: 35.8 },
+];
+
 export interface Medication {
   id: number;
   // LAYER 1: catalog / reference (imported, not typed by hand)
@@ -36,6 +56,15 @@ export interface Medication {
   manufacturer: string | null;
   barcode: string | null;
   storage: string | null;
+  // Detailed medical information
+  posology?: string | null;
+  interactions?: string | null;
+  composition?: string | null;
+  therapeutic_class?: string | null;
+  indications?: string | null;
+  precautions?: string | null;
+  route?: string | null;
+  side_effects?: string | null;
   // LAYER 2: local inventory (pharmacist only)
   zone: string | null;
   shelf: string | null;
@@ -47,6 +76,7 @@ export interface Medication {
   unit_price_cents: number | null; // NULL = unknown, NOT 0
   cost_price_cents: number | null;
   currency: string;
+  currency_code?: string;
   units_per_pack: number;
   price_source: PriceSource | null;
   price_confirmed: 0 | 1;
@@ -104,6 +134,14 @@ export interface CreateMedicationInput {
   manufacturer?: string | null;
   barcode?: string | null;
   storage?: string | null;
+  posology?: string | null;
+  interactions?: string | null;
+  composition?: string | null;
+  therapeutic_class?: string | null;
+  indications?: string | null;
+  precautions?: string | null;
+  route?: string | null;
+  side_effects?: string | null;
   zone?: string | null;
   shelf?: string | null;
   bin?: string | null;
@@ -113,6 +151,7 @@ export interface CreateMedicationInput {
   unit_price_cents?: number | null; // NULL = unknown, never defaulted to 0
   cost_price_cents?: number | null;
   currency?: string;
+  currency_code?: string;
   units_per_pack?: number;
   price_source?: PriceSource | null;
   price_confirmed?: 0 | 1 | boolean;
@@ -127,6 +166,17 @@ export interface UpdateMedicationLocalInventoryInput {
   location_note?: string | null;
   reorder_level?: number;
   lead_time_days?: number;
+}
+
+export interface UpdateMedicationMedicalInfoInput {
+  posology?: string | null;
+  interactions?: string | null;
+  composition?: string | null;
+  therapeutic_class?: string | null;
+  indications?: string | null;
+  precautions?: string | null;
+  route?: string | null;
+  side_effects?: string | null;
 }
 
 export interface CreateBatchInput {
@@ -211,6 +261,24 @@ function normalizeMedicationRow(row: Record<string, SqlParam>): Medication {
       row.manufacturer === null || row.manufacturer === undefined ? null : String(row.manufacturer),
     barcode: row.barcode === null || row.barcode === undefined ? null : String(row.barcode),
     storage: row.storage === null || row.storage === undefined ? null : String(row.storage),
+    posology: row.posology === null || row.posology === undefined ? null : String(row.posology),
+    interactions:
+      row.interactions === null || row.interactions === undefined ? null : String(row.interactions),
+    composition:
+      row.composition === null || row.composition === undefined ? null : String(row.composition),
+    therapeutic_class:
+      row.therapeutic_class === null || row.therapeutic_class === undefined
+        ? null
+        : String(row.therapeutic_class),
+    indications:
+      row.indications === null || row.indications === undefined ? null : String(row.indications),
+    precautions:
+      row.precautions === null || row.precautions === undefined ? null : String(row.precautions),
+    route: row.route === null || row.route === undefined ? null : String(row.route),
+    side_effects:
+      row.side_effects === null || row.side_effects === undefined
+        ? null
+        : String(row.side_effects),
     zone: row.zone === null || row.zone === undefined ? null : String(row.zone),
     shelf: row.shelf === null || row.shelf === undefined ? null : String(row.shelf),
     bin: row.bin === null || row.bin === undefined ? null : String(row.bin),
@@ -235,7 +303,22 @@ function normalizeMedicationRow(row: Record<string, SqlParam>): Medication {
       row.cost_price_cents === null || row.cost_price_cents === undefined
         ? null
         : Number(row.cost_price_cents),
-    currency: row.currency === null || row.currency === undefined ? 'USD' : String(row.currency),
+    currency:
+      row.currency_code !== null &&
+      row.currency_code !== undefined &&
+      String(row.currency_code).trim() !== ''
+        ? String(row.currency_code).trim().toUpperCase()
+        : row.currency === null || row.currency === undefined
+          ? 'DZD'
+          : String(row.currency).trim().toUpperCase(),
+    currency_code:
+      row.currency_code !== null &&
+      row.currency_code !== undefined &&
+      String(row.currency_code).trim() !== ''
+        ? String(row.currency_code).trim().toUpperCase()
+        : row.currency === null || row.currency === undefined
+          ? 'DZD'
+          : String(row.currency).trim().toUpperCase(),
     units_per_pack:
       row.units_per_pack === null || row.units_per_pack === undefined
         ? 1
@@ -277,6 +360,10 @@ export function setRepositoryDatabase(db: DatabasePort | null): void {
   defaultDatabasePort = db;
 }
 
+export function hasRepositoryDatabase(): boolean {
+  return defaultDatabasePort !== null;
+}
+
 export function getRepositoryDatabase(): DatabasePort {
   if (!defaultDatabasePort) {
     throw new Error(
@@ -307,6 +394,8 @@ async function insertMedicationWithPort(
         ? nowIso
         : null;
 
+  const resolvedCurrency = (input.currency_code ?? input.currency ?? 'DZD').trim().toUpperCase() || 'DZD';
+
   const columns = [
     ...(input.id !== undefined ? ['id'] : []),
     'brand_name',
@@ -318,6 +407,14 @@ async function insertMedicationWithPort(
     'manufacturer',
     'barcode',
     'storage',
+    'posology',
+    'interactions',
+    'composition',
+    'therapeutic_class',
+    'indications',
+    'precautions',
+    'route',
+    'side_effects',
     'zone',
     'shelf',
     'bin',
@@ -327,6 +424,7 @@ async function insertMedicationWithPort(
     'unit_price_cents',
     'cost_price_cents',
     'currency',
+    'currency_code',
     'units_per_pack',
     'price_source',
     'price_confirmed',
@@ -345,6 +443,14 @@ async function insertMedicationWithPort(
     input.manufacturer ?? null,
     input.barcode ?? null,
     input.storage ?? null,
+    input.posology ?? null,
+    input.interactions ?? null,
+    input.composition ?? null,
+    input.therapeutic_class ?? null,
+    input.indications ?? null,
+    input.precautions ?? null,
+    input.route ?? null,
+    input.side_effects ?? null,
     input.zone ?? null,
     input.shelf ?? null,
     input.bin ?? null,
@@ -353,7 +459,8 @@ async function insertMedicationWithPort(
     input.lead_time_days ?? 7,
     unitPriceCents,
     costPriceCents,
-    input.currency ?? 'USD',
+    resolvedCurrency,
+    resolvedCurrency,
     input.units_per_pack ?? 1,
     priceSource,
     priceConfirmed,
@@ -431,6 +538,49 @@ async function updateMedicationLocalInventoryWithPort(
   return normalizeMedicationRow(rows[0]);
 }
 
+async function updateMedicationMedicalInfoWithPort(
+  db: DatabasePort,
+  id: number,
+  input: UpdateMedicationMedicalInfoInput,
+): Promise<Medication> {
+  const existing = await getMedicationByIdWithPort(db, id);
+  if (!existing) {
+    throw new Error(`Medication with id ${id} not found`);
+  }
+
+  const nowIso = new Date().toISOString();
+  const rows = await db.query<Record<string, SqlParam>>(
+    `UPDATE medication
+     SET posology = ?,
+         interactions = ?,
+         composition = ?,
+         therapeutic_class = ?,
+         indications = ?,
+         precautions = ?,
+         route = ?,
+         side_effects = ?,
+         updated_at = ?
+     WHERE id = ?
+     RETURNING *`,
+    [
+      input.posology !== undefined ? input.posology : (existing.posology ?? null),
+      input.interactions !== undefined ? input.interactions : (existing.interactions ?? null),
+      input.composition !== undefined ? input.composition : (existing.composition ?? null),
+      input.therapeutic_class !== undefined
+        ? input.therapeutic_class
+        : (existing.therapeutic_class ?? null),
+      input.indications !== undefined ? input.indications : (existing.indications ?? null),
+      input.precautions !== undefined ? input.precautions : (existing.precautions ?? null),
+      input.route !== undefined ? input.route : (existing.route ?? null),
+      input.side_effects !== undefined ? input.side_effects : (existing.side_effects ?? null),
+      nowIso,
+      id,
+    ],
+  );
+
+  return normalizeMedicationRow(rows[0]);
+}
+
 /**
  * Updates an existing medication during a bulk import transaction.
  * Preserves existing fields when a field in `input` is undefined.
@@ -487,6 +637,14 @@ async function updateMedicationFromImportWithPort(
          manufacturer = ?,
          barcode = ?,
          storage = ?,
+         posology = ?,
+         interactions = ?,
+         composition = ?,
+         therapeutic_class = ?,
+         indications = ?,
+         precautions = ?,
+         route = ?,
+         side_effects = ?,
          zone = ?,
          shelf = ?,
          bin = ?,
@@ -496,6 +654,7 @@ async function updateMedicationFromImportWithPort(
          unit_price_cents = ?,
          cost_price_cents = ?,
          currency = ?,
+         currency_code = ?,
          units_per_pack = ?,
          price_source = ?,
          price_confirmed = ?,
@@ -513,6 +672,16 @@ async function updateMedicationFromImportWithPort(
       input.manufacturer !== undefined ? input.manufacturer : existing.manufacturer,
       input.barcode !== undefined ? input.barcode : existing.barcode,
       input.storage !== undefined ? input.storage : existing.storage,
+      input.posology !== undefined ? input.posology : (existing.posology ?? null),
+      input.interactions !== undefined ? input.interactions : (existing.interactions ?? null),
+      input.composition !== undefined ? input.composition : (existing.composition ?? null),
+      input.therapeutic_class !== undefined
+        ? input.therapeutic_class
+        : (existing.therapeutic_class ?? null),
+      input.indications !== undefined ? input.indications : (existing.indications ?? null),
+      input.precautions !== undefined ? input.precautions : (existing.precautions ?? null),
+      input.route !== undefined ? input.route : (existing.route ?? null),
+      input.side_effects !== undefined ? input.side_effects : (existing.side_effects ?? null),
       input.zone !== undefined ? input.zone : existing.zone,
       input.shelf !== undefined ? input.shelf : existing.shelf,
       input.bin !== undefined ? input.bin : existing.bin,
@@ -521,7 +690,12 @@ async function updateMedicationFromImportWithPort(
       input.lead_time_days !== undefined ? input.lead_time_days : existing.lead_time_days,
       unitPriceCents,
       costPriceCents,
-      input.currency !== undefined ? input.currency : existing.currency,
+      (input.currency_code ?? input.currency ?? existing.currency_code ?? existing.currency ?? 'DZD')
+        .trim()
+        .toUpperCase(),
+      (input.currency_code ?? input.currency ?? existing.currency_code ?? existing.currency ?? 'DZD')
+        .trim()
+        .toUpperCase(),
       input.units_per_pack !== undefined ? input.units_per_pack : existing.units_per_pack,
       priceSource,
       priceConfirmed,
@@ -812,6 +986,7 @@ async function listMovementsForMedicationWithPort(
 export interface SetPriceMetadataOptions {
   cost_price_cents?: number | null;
   currency?: string;
+  currency_code?: string;
   units_per_pack?: number;
 }
 
@@ -822,7 +997,7 @@ export interface SetPriceMetadataOptions {
  * - `cents` must be an integer number of cents or `null` (unknown). Never coerced to 0.
  * - `source` must be 'manual' | 'official_tariff' | 'imported'.
  * - `confirmed` is converted to 1 (true) or 0 (false).
- * - Optional `options` updates `cost_price_cents`, `currency`, and `units_per_pack`
+ * - Optional `options` updates `cost_price_cents`, `currency`, `currency_code`, and `units_per_pack`
  *   in the same transaction so `setPrice` is the sole code path that writes Layer 3 price fields.
  */
 async function setPriceWithPort(
@@ -863,10 +1038,11 @@ async function setPriceWithPort(
 
     const nextCostCents =
       validatedCostCents !== undefined ? validatedCostCents : existing.cost_price_cents;
+    const rawRequestedCurrency = options?.currency_code ?? options?.currency;
     const nextCurrency =
-      options?.currency !== undefined && options.currency.trim() !== ''
-        ? options.currency.trim().toUpperCase()
-        : existing.currency;
+      rawRequestedCurrency !== undefined && rawRequestedCurrency.trim() !== ''
+        ? rawRequestedCurrency.trim().toUpperCase()
+        : existing.currency_code || existing.currency || 'DZD';
     const nextUnitsPerPack =
       options?.units_per_pack !== undefined ? options.units_per_pack : existing.units_per_pack;
 
@@ -875,6 +1051,7 @@ async function setPriceWithPort(
        SET unit_price_cents = ?,
            cost_price_cents = ?,
            currency = ?,
+           currency_code = ?,
            units_per_pack = ?,
            price_source = ?,
            price_confirmed = ?,
@@ -885,6 +1062,7 @@ async function setPriceWithPort(
       [
         validatedCents,
         nextCostCents,
+        nextCurrency,
         nextCurrency,
         nextUnitsPerPack,
         validatedSource,
@@ -981,6 +1159,109 @@ async function listAllBatchesWithPort(db: DatabasePort): Promise<Batch[]> {
     expiry_date: row.expiry_date === null ? null : String(row.expiry_date),
     received_at: row.received_at === null ? null : String(row.received_at),
   }));
+}
+
+// =============================================================================
+// CURRENCIES & EXCHANGE RATES (UP TO 10 CURRENCIES, BASE = DZD)
+// =============================================================================
+
+async function seedCurrenciesWithPort(db: DatabasePort): Promise<void> {
+  await db.exec(`
+    CREATE TABLE IF NOT EXISTS currencies (
+      code TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      symbol TEXT NOT NULL,
+      rate_to_da REAL NOT NULL DEFAULT 1
+    );
+  `);
+
+  for (const cur of DEFAULT_CURRENCIES) {
+    await db.exec(
+      'INSERT OR IGNORE INTO currencies (code, name, symbol, rate_to_da) VALUES (?, ?, ?, ?)',
+      [cur.code, cur.name, cur.symbol, cur.rate_to_da],
+    );
+  }
+}
+
+async function listCurrenciesWithPort(db: DatabasePort): Promise<CurrencyRecord[]> {
+  try {
+    const rows = await db.query<Record<string, SqlParam>>(
+      `SELECT code, name, symbol, rate_to_da FROM currencies
+       ORDER BY CASE WHEN code = 'DZD' THEN 0 ELSE 1 END ASC, code ASC
+       LIMIT 10`,
+    );
+    if (rows.length === 0) {
+      return [...DEFAULT_CURRENCIES];
+    }
+    const orderIndex = new Map(DEFAULT_CURRENCIES.map((c, idx) => [c.code, idx]));
+    return rows
+      .map((r) => ({
+        code: String(r.code).trim().toUpperCase(),
+        name: String(r.name),
+        symbol: String(r.symbol),
+        rate_to_da: String(r.code).trim().toUpperCase() === 'DZD' ? 1 : Number(r.rate_to_da),
+      }))
+      .sort((a, b) => (orderIndex.get(a.code) ?? 99) - (orderIndex.get(b.code) ?? 99));
+  } catch {
+    return [...DEFAULT_CURRENCIES];
+  }
+}
+
+async function getCurrencyByCodeWithPort(
+  db: DatabasePort,
+  code: string,
+): Promise<CurrencyRecord | null> {
+  const normalizedCode = code.trim().toUpperCase();
+  if (!normalizedCode) return null;
+  const rows = await db.query<Record<string, SqlParam>>(
+    'SELECT code, name, symbol, rate_to_da FROM currencies WHERE code = ?',
+    [normalizedCode],
+  );
+  if (rows.length === 0) {
+    return DEFAULT_CURRENCIES.find((c) => c.code === normalizedCode) ?? null;
+  }
+  const r = rows[0];
+  return {
+    code: String(r.code).trim().toUpperCase(),
+    name: String(r.name),
+    symbol: String(r.symbol),
+    rate_to_da: normalizedCode === 'DZD' ? 1 : Number(r.rate_to_da),
+  };
+}
+
+async function updateCurrencyRateWithPort(
+  db: DatabasePort,
+  code: string,
+  rateToDa: number,
+): Promise<CurrencyRecord> {
+  const normalizedCode = code.trim().toUpperCase();
+  if (!normalizedCode) {
+    throw new Error('Currency code is required.');
+  }
+  if (normalizedCode === 'DZD') {
+    await db.exec('UPDATE currencies SET rate_to_da = 1 WHERE code = ?', ['DZD']);
+    return { code: 'DZD', name: 'Algerian Dinar', symbol: 'DA', rate_to_da: 1 };
+  }
+  if (typeof rateToDa !== 'number' || !Number.isFinite(rateToDa) || rateToDa <= 0) {
+    throw new RangeError(
+      `Exchange rate to DA for ${normalizedCode} must be a positive number (received ${String(rateToDa)}).`,
+    );
+  }
+
+  await seedCurrenciesWithPort(db);
+  const rows = await db.query<Record<string, SqlParam>>(
+    'UPDATE currencies SET rate_to_da = ? WHERE code = ? RETURNING code, name, symbol, rate_to_da',
+    [rateToDa, normalizedCode],
+  );
+  if (rows.length === 0) {
+    throw new Error(`Currency "${normalizedCode}" not found.`);
+  }
+  return {
+    code: String(rows[0].code).trim().toUpperCase(),
+    name: String(rows[0].name),
+    symbol: String(rows[0].symbol),
+    rate_to_da: Number(rows[0].rate_to_da),
+  };
 }
 
 // =============================================================================
@@ -1197,6 +1478,62 @@ export function updateMedicationLocalInventory(
   );
 }
 
+export function updateMedicationMedicalInfo(
+  id: number,
+  input: UpdateMedicationMedicalInfoInput,
+): Promise<Medication>;
+export function updateMedicationMedicalInfo(
+  db: DatabasePort,
+  id: number,
+  input: UpdateMedicationMedicalInfoInput,
+): Promise<Medication>;
+export function updateMedicationMedicalInfo(
+  dbOrId: DatabasePort | number,
+  idOrInput: number | UpdateMedicationMedicalInfoInput,
+  maybeInput?: UpdateMedicationMedicalInfoInput,
+): Promise<Medication> {
+  if (isDatabasePort(dbOrId)) {
+    return updateMedicationMedicalInfoWithPort(
+      dbOrId,
+      idOrInput as number,
+      maybeInput as UpdateMedicationMedicalInfoInput,
+    );
+  }
+  return updateMedicationMedicalInfoWithPort(
+    getRepositoryDatabase(),
+    dbOrId,
+    idOrInput as UpdateMedicationMedicalInfoInput,
+  );
+}
+
+export function updateMedicationFromImport(
+  id: number,
+  input: Partial<CreateMedicationInput>,
+): Promise<Medication>;
+export function updateMedicationFromImport(
+  db: DatabasePort,
+  id: number,
+  input: Partial<CreateMedicationInput>,
+): Promise<Medication>;
+export function updateMedicationFromImport(
+  dbOrId: DatabasePort | number,
+  idOrInput: number | Partial<CreateMedicationInput>,
+  maybeInput?: Partial<CreateMedicationInput>,
+): Promise<Medication> {
+  if (isDatabasePort(dbOrId)) {
+    return updateMedicationFromImportWithPort(
+      dbOrId,
+      idOrInput as number,
+      maybeInput as Partial<CreateMedicationInput>,
+    );
+  }
+  return updateMedicationFromImportWithPort(
+    getRepositoryDatabase(),
+    dbOrId,
+    idOrInput as Partial<CreateMedicationInput>,
+  );
+}
+
 export function deleteMedication(id: number): Promise<void>;
 export function deleteMedication(db: DatabasePort, id: number): Promise<void>;
 export function deleteMedication(dbOrId: DatabasePort | number, maybeId?: number): Promise<void> {
@@ -1345,6 +1682,47 @@ export function listPriceHistoryForMedication(
   return listPriceHistoryForMedicationWithPort(getRepositoryDatabase(), dbOrMedId);
 }
 
+export function listCurrencies(): Promise<CurrencyRecord[]>;
+export function listCurrencies(db: DatabasePort): Promise<CurrencyRecord[]>;
+export function listCurrencies(db?: DatabasePort): Promise<CurrencyRecord[]> {
+  return listCurrenciesWithPort(db ?? getRepositoryDatabase());
+}
+
+export function getCurrencyByCode(code: string): Promise<CurrencyRecord | null>;
+export function getCurrencyByCode(db: DatabasePort, code: string): Promise<CurrencyRecord | null>;
+export function getCurrencyByCode(
+  dbOrCode: DatabasePort | string,
+  maybeCode?: string,
+): Promise<CurrencyRecord | null> {
+  if (isDatabasePort(dbOrCode)) {
+    return getCurrencyByCodeWithPort(dbOrCode, maybeCode as string);
+  }
+  return getCurrencyByCodeWithPort(getRepositoryDatabase(), dbOrCode);
+}
+
+export function updateCurrencyRate(code: string, rateToDa: number): Promise<CurrencyRecord>;
+export function updateCurrencyRate(
+  db: DatabasePort,
+  code: string,
+  rateToDa: number,
+): Promise<CurrencyRecord>;
+export function updateCurrencyRate(
+  dbOrCode: DatabasePort | string,
+  codeOrRate: string | number,
+  maybeRate?: number,
+): Promise<CurrencyRecord> {
+  if (isDatabasePort(dbOrCode)) {
+    return updateCurrencyRateWithPort(dbOrCode, codeOrRate as string, maybeRate as number);
+  }
+  return updateCurrencyRateWithPort(getRepositoryDatabase(), dbOrCode, codeOrRate as number);
+}
+
+export function seedCurrencies(): Promise<void>;
+export function seedCurrencies(db: DatabasePort): Promise<void>;
+export function seedCurrencies(db?: DatabasePort): Promise<void> {
+  return seedCurrenciesWithPort(db ?? getRepositoryDatabase());
+}
+
 /**
  * Bound repository instance exposing typed CRUD per table over a specific DatabasePort.
  * Note: stock_movement and price_history are strictly append-only (no update or delete methods).
@@ -1371,6 +1749,13 @@ export function createRepository(db: DatabasePort) {
       options?: SetPriceMetadataOptions,
     ) => setPriceWithPort(db, medicationId, cents, source, confirmed, userId, options),
 
+    // Currencies & Exchange Rates
+    seedCurrencies: () => seedCurrenciesWithPort(db),
+    listCurrencies: () => listCurrenciesWithPort(db),
+    getCurrencyByCode: (code: string) => getCurrencyByCodeWithPort(db, code),
+    updateCurrencyRate: (code: string, rateToDa: number) =>
+      updateCurrencyRateWithPort(db, code, rateToDa),
+
     // Medication CRUD
     insertMedication: (input: CreateMedicationInput) => insertMedicationWithPort(db, input),
     getMedicationById: (id: number) => getMedicationByIdWithPort(db, id),
@@ -1378,6 +1763,8 @@ export function createRepository(db: DatabasePort) {
     listMedications: () => listMedicationsWithPort(db),
     updateMedicationLocalInventory: (id: number, input: UpdateMedicationLocalInventoryInput) =>
       updateMedicationLocalInventoryWithPort(db, id, input),
+    updateMedicationMedicalInfo: (id: number, input: UpdateMedicationMedicalInfoInput) =>
+      updateMedicationMedicalInfoWithPort(db, id, input),
     updateMedicationFromImport: (id: number, input: Partial<CreateMedicationInput>) =>
       updateMedicationFromImportWithPort(db, id, input),
     deleteMedication: (id: number) => deleteMedicationWithPort(db, id),

@@ -1,12 +1,19 @@
 import React, { useEffect, useState } from 'react';
-import { getRepositoryDatabase, type Medication, type PriceHistory } from '../db/repository';
+import {
+  DEFAULT_CURRENCIES,
+  getRepositoryDatabase,
+  type Medication,
+  type PriceHistory,
+} from '../db/repository';
 import { formatCurrentUserIdentifier, type CurrentUserProfile } from '../movements';
 import {
   computeDerivedPriceDisplays,
   confirmExistingMedicationPrice,
   formatCentsToMajor,
+  formatMedicationPriceInDa,
   formatMoneyDisplay,
   getMedicationPriceVisualState,
+  isDzdCurrency,
   savePharmacistManualPrice,
 } from '../pricing';
 
@@ -25,13 +32,18 @@ export const MedicationPriceEditorPanel: React.FC<MedicationPriceEditorPanelProp
   currentUser,
   onPriceUpdated,
 }) => {
+  const medCurrency = medication.currency_code || medication.currency || 'DZD';
   const [unitPriceInput, setUnitPriceInput] = useState<string>(() =>
-    medication.unit_price_cents !== null ? formatCentsToMajor(medication.unit_price_cents) : '',
+    medication.unit_price_cents !== null
+      ? formatCentsToMajor(medication.unit_price_cents, medCurrency)
+      : '',
   );
   const [costPriceInput, setCostPriceInput] = useState<string>(() =>
-    medication.cost_price_cents !== null ? formatCentsToMajor(medication.cost_price_cents) : '',
+    medication.cost_price_cents !== null
+      ? formatCentsToMajor(medication.cost_price_cents, medCurrency)
+      : '',
   );
-  const [currencyInput, setCurrencyInput] = useState<string>(() => medication.currency || 'USD');
+  const [currencyInput, setCurrencyInput] = useState<string>(() => medCurrency);
   const [unitsPerPackInput, setUnitsPerPackInput] = useState<string>(() =>
     String(medication.units_per_pack || 1),
   );
@@ -44,13 +56,18 @@ export const MedicationPriceEditorPanel: React.FC<MedicationPriceEditorPanelProp
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
   useEffect(() => {
+    const nextCurrency = medication.currency_code || medication.currency || 'DZD';
     setUnitPriceInput(
-      medication.unit_price_cents !== null ? formatCentsToMajor(medication.unit_price_cents) : '',
+      medication.unit_price_cents !== null
+        ? formatCentsToMajor(medication.unit_price_cents, nextCurrency)
+        : '',
     );
     setCostPriceInput(
-      medication.cost_price_cents !== null ? formatCentsToMajor(medication.cost_price_cents) : '',
+      medication.cost_price_cents !== null
+        ? formatCentsToMajor(medication.cost_price_cents, nextCurrency)
+        : '',
     );
-    setCurrencyInput(medication.currency || 'USD');
+    setCurrencyInput(nextCurrency);
     setUnitsPerPackInput(String(medication.units_per_pack || 1));
     setErrorMessage(null);
     setStatusMessage(null);
@@ -59,6 +76,7 @@ export const MedicationPriceEditorPanel: React.FC<MedicationPriceEditorPanelProp
     medication.unit_price_cents,
     medication.cost_price_cents,
     medication.currency,
+    medication.currency_code,
     medication.units_per_pack,
     medication.price_confirmed,
     medication.price_source,
@@ -69,7 +87,7 @@ export const MedicationPriceEditorPanel: React.FC<MedicationPriceEditorPanelProp
     unitPriceCents: medication.unit_price_cents,
     costPriceCents: medication.cost_price_cents,
     unitsPerPack: medication.units_per_pack,
-    currency: medication.currency,
+    currency: medCurrency,
   });
 
   const handleConfirmExistingPrice = async () => {
@@ -155,7 +173,7 @@ export const MedicationPriceEditorPanel: React.FC<MedicationPriceEditorPanelProp
                   data-testid={`${idPrefix}-visual-value`}
                   className="text-xl font-bold font-mono tabular-nums text-slate-400 line-through decoration-slate-300"
                 >
-                  {formatMoneyDisplay(medication.unit_price_cents, medication.currency)}
+                  {formatMedicationPriceInDa(medication.unit_price_cents, medCurrency)}
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <span
@@ -183,7 +201,7 @@ export const MedicationPriceEditorPanel: React.FC<MedicationPriceEditorPanelProp
                   data-testid={`${idPrefix}-visual-value`}
                   className="text-xl font-bold font-mono tabular-nums text-slate-900"
                 >
-                  {formatMoneyDisplay(medication.unit_price_cents, medication.currency)}
+                  {formatMedicationPriceInDa(medication.unit_price_cents, medCurrency)}
                 </div>
                 <span
                   data-testid={`${idPrefix}-status-badge`}
@@ -208,7 +226,7 @@ export const MedicationPriceEditorPanel: React.FC<MedicationPriceEditorPanelProp
               <div>
                 Cost:{' '}
                 <strong className="font-mono text-slate-800">
-                  {formatMoneyDisplay(medication.cost_price_cents, medication.currency)}
+                  {formatMedicationPriceInDa(medication.cost_price_cents, medCurrency)}
                 </strong>
               </div>
               <div>
@@ -272,7 +290,11 @@ export const MedicationPriceEditorPanel: React.FC<MedicationPriceEditorPanelProp
         >
           <div className="flex items-center justify-between gap-2">
             <h4 className="text-xs font-semibold text-slate-900">Update Medication Pricing</h4>
-            <span className="text-[11px] text-slate-500">e.g. 12.50, 12,50, or 12</span>
+            <span className="text-[11px] text-slate-500">
+              {isDzdCurrency(currencyInput)
+                ? 'Whole integer DZD (e.g. 1250 DA)'
+                : 'e.g. 12.50, 12,50, or 12'}
+            </span>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -281,7 +303,7 @@ export const MedicationPriceEditorPanel: React.FC<MedicationPriceEditorPanelProp
                 htmlFor={`${idPrefix}-unit-price-input`}
                 className="block text-xs font-medium text-slate-700 mb-1"
               >
-                Unit Selling Price
+                Unit Selling Price ({isDzdCurrency(currencyInput) ? 'DA' : currencyInput})
               </label>
               <input
                 id={`${idPrefix}-unit-price-input`}
@@ -289,7 +311,7 @@ export const MedicationPriceEditorPanel: React.FC<MedicationPriceEditorPanelProp
                 type="text"
                 value={unitPriceInput}
                 onChange={(e) => setUnitPriceInput(e.target.value)}
-                placeholder="e.g. 12.50"
+                placeholder={isDzdCurrency(currencyInput) ? 'e.g. 1250' : 'e.g. 12.50'}
                 className="w-full px-3 py-2 text-xs font-mono bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-600"
               />
             </div>
@@ -307,7 +329,7 @@ export const MedicationPriceEditorPanel: React.FC<MedicationPriceEditorPanelProp
                 type="text"
                 value={costPriceInput}
                 onChange={(e) => setCostPriceInput(e.target.value)}
-                placeholder="e.g. 8.20"
+                placeholder={isDzdCurrency(currencyInput) ? 'e.g. 820' : 'e.g. 8.20'}
                 className="w-full px-3 py-2 text-xs font-mono bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-600"
               />
             </div>
@@ -326,9 +348,11 @@ export const MedicationPriceEditorPanel: React.FC<MedicationPriceEditorPanelProp
                 onChange={(e) => setCurrencyInput(e.target.value)}
                 className="w-full px-3 py-2 text-xs font-mono bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-600"
               >
-                <option value="USD">USD ($)</option>
-                <option value="EUR">EUR (€)</option>
-                <option value="GBP">GBP (£)</option>
+                {DEFAULT_CURRENCIES.map((c) => (
+                  <option key={c.code} value={c.code}>
+                    {c.code} ({c.symbol}) — {c.name}
+                  </option>
+                ))}
               </select>
             </div>
 
@@ -419,7 +443,7 @@ export const MedicationPriceEditorPanel: React.FC<MedicationPriceEditorPanelProp
                         <td className="py-2.5 px-3 font-semibold text-slate-900">
                           {ph.unit_price_cents === null
                             ? 'price not entered'
-                            : formatMoneyDisplay(ph.unit_price_cents, medication.currency)}
+                            : formatMedicationPriceInDa(ph.unit_price_cents, medCurrency)}
                         </td>
                         <td className="py-2.5 px-3 font-sans">
                           <span className="px-2 py-0.5 text-[11px] bg-slate-100 text-slate-700 rounded-md">

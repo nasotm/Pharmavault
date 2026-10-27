@@ -33,6 +33,14 @@ export const SEED_MEDICATIONS: readonly SeedMedicationSpec[] = [
       manufacturer: 'GlaxoSmithKline',
       barcode: '0300296008214',
       storage: 'Room temperature (15-25°C)',
+      posology: 'Adults: 500 mg to 1 g every 8 to 12 hours depending on infection severity. Complete full prescribed course.',
+      interactions: 'Oral anticoagulants (Warfarin/Acenocoumarol: increased INR), Methotrexate (reduced renal clearance), Allopurinol (increased skin rash risk).',
+      composition: 'Active: Amoxicillin trihydrate eq. 500 mg amoxicillin. Excipients: Magnesium stearate, gelatin, titanium dioxide (E171), iron oxide.',
+      therapeutic_class: 'Antibiotic (Beta-lactam / Aminopenicillin)',
+      indications: 'Acute bacterial sinusitis, acute otitis media, acute streptococcal tonsillitis/pharyngitis, community-acquired pneumonia, urinary tract infections.',
+      precautions: 'Contraindicated in beta-lactam hypersensitivity. Adjust dose in severe renal impairment (GFR < 30 mL/min). Avoid in infectious mononucleosis.',
+      route: 'Oral',
+      side_effects: 'Diarrhea, nausea, maculopapular skin rash, mucocutaneous candidiasis; rarely anaphylaxis or C. difficile colitis.',
       zone: 'A',
       shelf: 'A1',
       bin: '01',
@@ -41,7 +49,8 @@ export const SEED_MEDICATIONS: readonly SeedMedicationSpec[] = [
       lead_time_days: 5,
       unit_price_cents: null,
       cost_price_cents: 820,
-      currency: 'USD',
+      currency: 'DZD',
+      currency_code: 'DZD',
       units_per_pack: 21,
       price_source: null,
       price_confirmed: 0,
@@ -83,6 +92,14 @@ export const SEED_MEDICATIONS: readonly SeedMedicationSpec[] = [
       manufacturer: 'GlaxoSmithKline',
       barcode: '0301730682204',
       storage: 'Store below 30°C, protect from frost and direct sunlight',
+      posology: 'Acute bronchospasm: 1 to 2 puffs (100-200 mcg) as needed, up to 4 times daily (max 8 puffs/24h). Exercise-induced asthma: 2 puffs 15 min prior.',
+      interactions: 'Non-selective beta-blockers (Propranolol: antagonizes bronchodilation), non-potassium-sparing diuretics and xanthines (additive hypokalemia).',
+      composition: 'Active: Salbutamol sulfate eq. 100 mcg salbutamol per actuation. Excipient: Norflurane (HFA-134a propellant, CFC-free).',
+      therapeutic_class: 'Bronchodilator (Selective Short-Acting Beta-2 Agonist)',
+      indications: 'Symptomatic relief and prevention of bronchospasm in bronchial asthma and reversible airways obstruction (COPD).',
+      precautions: 'Use with caution in thyrotoxicosis, cardiovascular disease, arrhythmias, or hypertension. Paradoxical bronchospasm requires immediate discontinuation.',
+      route: 'Inhalation',
+      side_effects: 'Fine skeletal muscle tremor, tachycardia, palpitations, headache, peripheral vasodilation, transient hypokalemia at high doses.',
       zone: 'B',
       shelf: 'B2',
       bin: '04',
@@ -91,7 +108,8 @@ export const SEED_MEDICATIONS: readonly SeedMedicationSpec[] = [
       lead_time_days: 7,
       unit_price_cents: null,
       cost_price_cents: 1950,
-      currency: 'USD',
+      currency: 'DZD',
+      currency_code: 'DZD',
       units_per_pack: 1,
       price_source: null,
       price_confirmed: 0,
@@ -127,6 +145,14 @@ export const SEED_MEDICATIONS: readonly SeedMedicationSpec[] = [
       manufacturer: 'Sanofi-Aventis',
       barcode: '0300882219052',
       storage: 'Refrigerated (2-8°C)',
+      posology: 'Administer subcutaneously once daily at the same time each day. Individualize dose based on fasting blood glucose targets.',
+      interactions: 'Oral antidiabetics, ACE inhibitors, salicylates (enhance hypoglycemic effect); corticosteroids, thiazides, sympathomimetics (reduce effect); beta-blockers mask hypoglycemia symptoms.',
+      composition: 'Active: Insulin glargine 100 units/mL (3.64 mg/mL). Excipients: Zinc chloride, metacresol, glycerol (85%), hydrochloric acid, sodium hydroxide, water for injections.',
+      therapeutic_class: 'Antidiabetic (Long-Acting Basal Insulin Analogue)',
+      indications: 'Treatment of diabetes mellitus in adults, adolescents, and children aged 2 years and above requiring basal insulin.',
+      precautions: 'Never administer intravenously or mix with other insulins. Rotate injection sites within the same region to prevent lipodystrophy and cutaneous amyloidosis.',
+      route: 'Subcutaneous (SC)',
+      side_effects: 'Hypoglycemia (most frequent), injection site reactions, lipohypertrophy, transient visual disturbances.',
       zone: 'C',
       shelf: 'FRIDGE-1',
       bin: 'R2',
@@ -135,7 +161,8 @@ export const SEED_MEDICATIONS: readonly SeedMedicationSpec[] = [
       lead_time_days: 3,
       unit_price_cents: null, // Explicitly NULL (unknown price, never 0)
       cost_price_cents: 4100,
-      currency: 'USD',
+      currency: 'DZD',
+      currency_code: 'DZD',
       units_per_pack: 5,
       price_source: null,
       price_confirmed: 0,
@@ -171,6 +198,14 @@ export const SEED_MEDICATIONS: readonly SeedMedicationSpec[] = [
       manufacturer: 'Viatris / Pfizer',
       barcode: '0300710156238',
       storage: 'Room temperature (20-25°C)',
+      posology: 'Usual starting dose: 10 mg or 20 mg once daily (any time of day, with or without food). Maintenance range: 10 mg to 80 mg once daily.',
+      interactions: 'Strong CYP3A4 inhibitors (Clarithromycin, Itraconazole, HIV protease inhibitors), Ciclosporin, Gemfibrozil/fibrates, Fusidic acid (co-administration contraindicated due to rhabdomyolysis risk).',
+      composition: 'Active: Atorvastatin calcium trihydrate eq. 20 mg atorvastatin. Excipients: Calcium carbonate, microcrystalline cellulose, lactose monohydrate, croscarmellose sodium.',
+      therapeutic_class: 'Lipid-Modifying Agent (HMG-CoA Reductase Inhibitor / Statin)',
+      indications: 'Hypercholesterolemia, mixed dyslipidemia, and primary/secondary prevention of cardiovascular events.',
+      precautions: 'Contraindicated in active liver disease and pregnancy/lactation. Monitor liver transaminases and creatine kinase (CK) if unexplained muscle pain or weakness occurs.',
+      route: 'Oral',
+      side_effects: 'Myalgia, arthralgia, nasopharyngitis, dyspepsia, diarrhea, elevated hepatic transaminases; rarely myopathy or rhabdomyolysis.',
       zone: 'A',
       shelf: 'A3',
       bin: '09',
@@ -179,7 +214,8 @@ export const SEED_MEDICATIONS: readonly SeedMedicationSpec[] = [
       lead_time_days: 7,
       unit_price_cents: null,
       cost_price_cents: 1120,
-      currency: 'USD',
+      currency: 'DZD',
+      currency_code: 'DZD',
       units_per_pack: 30,
       price_source: null,
       price_confirmed: 0,
@@ -214,6 +250,14 @@ export const SEED_MEDICATIONS: readonly SeedMedicationSpec[] = [
       manufacturer: 'Opella Healthcare (Sanofi)',
       barcode: '3400935955838',
       storage: 'Room temperature (15-25°C), keep dry',
+      posology: 'Adults and children > 50 kg: 1 tablet (1000 mg) per dose, repeated after at least 4 to 6 hours if needed. Do not exceed 3 g/day (or 4 g/day on medical advice).',
+      interactions: 'Oral anticoagulants (Warfarin: increased bleeding risk at 4 g/day for >= 4 days), Flucloxacillin (risk of high anion gap metabolic acidosis), hepatotoxic enzyme inducers.',
+      composition: 'Active: Paracetamol 1000 mg. Excipients: Povidone, pregelatinized starch, sodium carboxymethyl starch (type A), talc, magnesium stearate.',
+      therapeutic_class: 'Analgesic & Antipyretic (Non-opioid)',
+      indications: 'Symptomatic treatment of mild-to-moderate pain and/or febrile conditions (headache, dental pain, flu-like states, myalgia).',
+      precautions: 'Contraindicated in severe hepatocellular insufficiency. Check all concomitant medications for hidden paracetamol to prevent accidental hepatotoxic overdose.',
+      route: 'Oral',
+      side_effects: 'Rare: hypersensitivity reactions (urticaria, erythema, anaphylaxis), thrombocytopenia, leukopenia, hepatic cytolysis in overdose.',
       zone: 'A',
       shelf: 'A1',
       bin: '02',
@@ -222,7 +266,8 @@ export const SEED_MEDICATIONS: readonly SeedMedicationSpec[] = [
       lead_time_days: 4,
       unit_price_cents: null,
       cost_price_cents: 210,
-      currency: 'USD',
+      currency: 'DZD',
+      currency_code: 'DZD',
       units_per_pack: 8,
       price_source: null,
       price_confirmed: 0,
@@ -271,6 +316,7 @@ export async function seedDatabase(db: DatabasePort): Promise<SeedResult> {
 
   await db.transaction(async (tx) => {
     const repo = createRepository(tx);
+    await repo.seedCurrencies();
 
     for (const item of SEED_MEDICATIONS) {
       const existing = item.medication.barcode
@@ -278,6 +324,19 @@ export async function seedDatabase(db: DatabasePort): Promise<SeedResult> {
         : null;
 
       if (existing) {
+        // Backfill detailed medical info on pre-existing seeded rows if not yet populated
+        if (!existing.posology && !existing.therapeutic_class && item.medication.posology) {
+          await repo.updateMedicationMedicalInfo(existing.id, {
+            posology: item.medication.posology ?? null,
+            interactions: item.medication.interactions ?? null,
+            composition: item.medication.composition ?? null,
+            therapeutic_class: item.medication.therapeutic_class ?? null,
+            indications: item.medication.indications ?? null,
+            precautions: item.medication.precautions ?? null,
+            route: item.medication.route ?? null,
+            side_effects: item.medication.side_effects ?? null,
+          });
+        }
         skippedMedications++;
         continue;
       }

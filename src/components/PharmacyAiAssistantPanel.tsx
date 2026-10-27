@@ -113,6 +113,50 @@ export const PharmacyAiAssistantPanel: React.FC<PharmacyAiAssistantPanelProps> =
     }
   };
 
+  const formatToolCallSignature = (tc: ExecutedToolCallRecord): string => {
+    const args = tc.args ?? {};
+    if (tc.name === 'get_revenue') {
+      return `get_revenue(${JSON.stringify(String(args.date ?? 'today'))})`;
+    }
+    if (tc.name === 'list_expiring') {
+      return `list_expiring(${String(args.days ?? 30)})`;
+    }
+    if (tc.name === 'find_by_symptom_or_category') {
+      return `find_by_symptom_or_category(${JSON.stringify(String(args.category ?? ''))})`;
+    }
+    if (tc.name === 'search_medication' && args.query) {
+      return `search_medication(${JSON.stringify(String(args.query))})`;
+    }
+    if (tc.name === 'get_stock' && args.medication_id !== undefined) {
+      return `get_stock(${String(args.medication_id)})`;
+    }
+    return tc.name;
+  };
+
+  const renderFormattedAssistantText = (rawText: string): React.ReactNode => {
+    const tokens = rawText.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
+    return tokens.map((token, idx) => {
+      if (token.startsWith('**') && token.endsWith('**') && token.length > 4) {
+        return (
+          <strong key={idx} className="font-semibold text-slate-900 dark:text-white">
+            {token.slice(2, -2)}
+          </strong>
+        );
+      }
+      if (token.startsWith('`') && token.endsWith('`') && token.length > 2) {
+        return (
+          <code
+            key={idx}
+            className="px-1 py-0.5 bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 rounded text-[11px] font-mono"
+          >
+            {token.slice(1, -1)}
+          </code>
+        );
+      }
+      return <React.Fragment key={idx}>{token}</React.Fragment>;
+    });
+  };
+
   const executePrompt = async (
     promptText: string,
     forcedToolCalls?: { name: string; args: Record<string, unknown> }[],
@@ -120,16 +164,18 @@ export const PharmacyAiAssistantPanel: React.FC<PharmacyAiAssistantPanelProps> =
     const trimmed = promptText.trim();
     if (!trimmed) return;
 
+    setQueryInput('');
     setIsLoading(true);
     setErrorBanner(null);
 
     try {
       const db = getRepositoryDatabase();
+      const nowIso = new Date().toISOString();
       const turn = await runAssistantTurn(db, trimmed, {
         contextMedicationId: selectedMedication?.id ?? 1,
         contextMedicationName: selectedMedication?.brand_name ?? 'Amoxil',
-        referenceDate: '2026-11-01',
-        referenceTimestamp: '2026-11-01T12:00:00.000Z',
+        referenceDate: nowIso.slice(0, 10),
+        referenceTimestamp: nowIso,
         forcedToolCalls,
         useRemoteModelEndpoint: !forcedToolCalls,
       });
@@ -145,7 +191,6 @@ export const PharmacyAiAssistantPanel: React.FC<PharmacyAiAssistantPanelProps> =
       };
 
       setMessages((prev) => [newMsg, ...prev]);
-      setQueryInput('');
       refreshRateStatus();
     } catch (err) {
       refreshRateStatus();
@@ -228,7 +273,7 @@ export const PharmacyAiAssistantPanel: React.FC<PharmacyAiAssistantPanelProps> =
           id="ai-assistant-section"
           data-testid="ai-assistant-panel"
           aria-label="Pharmacy Inventory Assistant"
-          className="mb-4 w-[calc(100vw-3rem)] sm:w-[430px] max-h-[78vh] bg-white border border-slate-200/90 rounded-2xl shadow-2xl shadow-slate-900/15 flex flex-col overflow-hidden"
+          className="mb-4 w-[calc(100vw-3rem)] sm:w-[440px] max-h-[80vh] bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-700/80 rounded-2xl shadow-2xl shadow-slate-900/15 flex flex-col overflow-hidden"
         >
           {/* Chat Window Header */}
           <div className="px-5 py-4 bg-slate-900 text-white flex items-center justify-between gap-3 shrink-0">
@@ -254,7 +299,7 @@ export const PharmacyAiAssistantPanel: React.FC<PharmacyAiAssistantPanelProps> =
                   Pharmacy Assistant
                 </h2>
                 <p className="text-[11px] text-slate-300">
-                  Read-only inventory lookup · Context: {selectedMedication?.brand_name ?? 'Amoxil'}
+                  Read-only inventory &amp; sales lookup · Context: {selectedMedication?.brand_name ?? 'Amoxil'}
                 </p>
               </div>
             </div>
@@ -286,18 +331,42 @@ export const PharmacyAiAssistantPanel: React.FC<PharmacyAiAssistantPanelProps> =
           </div>
 
           {/* Scrollable Messages & Quick Chips Area */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50/60">
+          <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50/60 dark:bg-slate-950/50">
             {/* Suggested Questions */}
             <div className="space-y-2">
-              <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+              <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">
                 Suggested Questions
               </div>
               <div className="flex flex-wrap gap-1.5">
                 <button
                   type="button"
+                  data-testid="ai-quick-expiring"
+                  onClick={() => void executePrompt('What is expiring this month?')}
+                  className="px-2.5 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800 hover:bg-sky-50 dark:hover:bg-sky-950/50 hover:text-sky-700 dark:hover:text-sky-300 hover:border-sky-200 border border-slate-200/90 dark:border-slate-700 rounded-lg transition-colors shadow-2xs"
+                >
+                  What is expiring this month?
+                </button>
+                <button
+                  type="button"
+                  data-testid="ai-quick-revenue-today"
+                  onClick={() => void executePrompt('How much did we sell today?')}
+                  className="px-2.5 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800 hover:bg-sky-50 dark:hover:bg-sky-950/50 hover:text-sky-700 dark:hover:text-sky-300 hover:border-sky-200 border border-slate-200/90 dark:border-slate-700 rounded-lg transition-colors shadow-2xs"
+                >
+                  How much did we sell today?
+                </button>
+                <button
+                  type="button"
+                  data-testid="ai-quick-category-antibacterial"
+                  onClick={() => void executePrompt('Find Antibacterial medications')}
+                  className="px-2.5 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800 hover:bg-sky-50 dark:hover:bg-sky-950/50 hover:text-sky-700 dark:hover:text-sky-300 hover:border-sky-200 border border-slate-200/90 dark:border-slate-700 rounded-lg transition-colors shadow-2xs"
+                >
+                  Find Antibacterial medications
+                </button>
+                <button
+                  type="button"
                   data-testid="ai-quick-where-amox"
                   onClick={() => void executePrompt('where are the amoxicillin capsules')}
-                  className="px-2.5 py-1.5 text-xs font-medium text-slate-700 bg-white hover:bg-sky-50 hover:text-sky-700 hover:border-sky-200 border border-slate-200/90 rounded-lg transition-colors shadow-2xs"
+                  className="px-2.5 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800 hover:bg-sky-50 dark:hover:bg-sky-950/50 hover:text-sky-700 dark:hover:text-sky-300 hover:border-sky-200 border border-slate-200/90 dark:border-slate-700 rounded-lg transition-colors shadow-2xs"
                 >
                   Where are amoxicillin capsules?
                 </button>
@@ -305,17 +374,9 @@ export const PharmacyAiAssistantPanel: React.FC<PharmacyAiAssistantPanelProps> =
                   type="button"
                   data-testid="ai-quick-low-stock"
                   onClick={() => void executePrompt("what's running low?")}
-                  className="px-2.5 py-1.5 text-xs font-medium text-slate-700 bg-white hover:bg-sky-50 hover:text-sky-700 hover:border-sky-200 border border-slate-200/90 rounded-lg transition-colors shadow-2xs"
+                  className="px-2.5 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800 hover:bg-sky-50 dark:hover:bg-sky-950/50 hover:text-sky-700 dark:hover:text-sky-300 hover:border-sky-200 border border-slate-200/90 dark:border-slate-700 rounded-lg transition-colors shadow-2xs"
                 >
                   What&apos;s running low?
-                </button>
-                <button
-                  type="button"
-                  data-testid="ai-quick-expiring"
-                  onClick={() => void executePrompt('what expires this month')}
-                  className="px-2.5 py-1.5 text-xs font-medium text-slate-700 bg-white hover:bg-sky-50 hover:text-sky-700 hover:border-sky-200 border border-slate-200/90 rounded-lg transition-colors shadow-2xs"
-                >
-                  What expires this month?
                 </button>
                 <button
                   type="button"
@@ -323,7 +384,7 @@ export const PharmacyAiAssistantPanel: React.FC<PharmacyAiAssistantPanelProps> =
                   onClick={() =>
                     void executePrompt('how much for 3 boxes of this with 10% off')
                   }
-                  className="px-2.5 py-1.5 text-xs font-medium text-slate-700 bg-white hover:bg-sky-50 hover:text-sky-700 hover:border-sky-200 border border-slate-200/90 rounded-lg transition-colors shadow-2xs"
+                  className="px-2.5 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800 hover:bg-sky-50 dark:hover:bg-sky-950/50 hover:text-sky-700 dark:hover:text-sky-300 hover:border-sky-200 border border-slate-200/90 dark:border-slate-700 rounded-lg transition-colors shadow-2xs"
                 >
                   3 boxes with 10% off
                 </button>
@@ -331,7 +392,7 @@ export const PharmacyAiAssistantPanel: React.FC<PharmacyAiAssistantPanelProps> =
                   type="button"
                   data-testid="ai-quick-null-price"
                   onClick={() => void executePrompt('how much is Lantus SoloStar?')}
-                  className="px-2.5 py-1.5 text-xs font-medium text-slate-700 bg-white hover:bg-sky-50 hover:text-sky-700 hover:border-sky-200 border border-slate-200/90 rounded-lg transition-colors shadow-2xs"
+                  className="px-2.5 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800 hover:bg-sky-50 dark:hover:bg-sky-950/50 hover:text-sky-700 dark:hover:text-sky-300 hover:border-sky-200 border border-slate-200/90 dark:border-slate-700 rounded-lg transition-colors shadow-2xs"
                 >
                   Price of Lantus SoloStar?
                 </button>
@@ -342,7 +403,7 @@ export const PharmacyAiAssistantPanel: React.FC<PharmacyAiAssistantPanelProps> =
               <div
                 role="alert"
                 data-testid="ai-assistant-error-banner"
-                className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-800"
+                className="p-3 bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-800 rounded-xl text-xs text-red-800 dark:text-red-200"
               >
                 {errorBanner}
               </div>
@@ -352,13 +413,13 @@ export const PharmacyAiAssistantPanel: React.FC<PharmacyAiAssistantPanelProps> =
             {messages.length === 0 ? (
               <div
                 data-testid="ai-assistant-empty-state"
-                className="p-5 bg-white border border-slate-200/80 rounded-xl text-center space-y-1"
+                className="p-5 bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-xl text-center space-y-1.5"
               >
-                <div className="text-xs font-semibold text-slate-800">
-                  Ask anything about stock, locations, expiry, or pricing
+                <div className="text-xs font-semibold text-slate-800 dark:text-slate-100">
+                  Type any question about sales, expiry, categories, stock, or pricing
                 </div>
-                <p className="text-[11px] text-slate-500">
-                  Every answer is verified directly against your pharmacy inventory database.
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  Every answer is grounded strictly in read-only tools over your pharmacy database.
                 </p>
               </div>
             ) : (
@@ -367,10 +428,13 @@ export const PharmacyAiAssistantPanel: React.FC<PharmacyAiAssistantPanelProps> =
                   <article
                     key={msg.id}
                     data-testid="ai-assistant-message-card"
-                    className="bg-white border border-slate-200/90 rounded-xl overflow-hidden shadow-2xs"
+                    className="bg-white dark:bg-slate-900 border border-slate-200/90 dark:border-slate-800 rounded-xl overflow-hidden shadow-2xs"
                   >
-                    <div className="px-3.5 py-2 bg-slate-50 border-b border-slate-100 flex items-center justify-between gap-2">
-                      <span className="text-xs font-semibold text-slate-800 truncate">
+                    <div className="px-3.5 py-2 bg-slate-50 dark:bg-slate-800/70 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between gap-2">
+                      <span
+                        data-testid="ai-assistant-user-prompt"
+                        className="text-xs font-semibold text-slate-800 dark:text-slate-100 truncate"
+                      >
                         &ldquo;{msg.userPrompt}&rdquo;
                       </span>
                       <span className="text-[10px] font-mono text-slate-400 shrink-0">
@@ -381,15 +445,15 @@ export const PharmacyAiAssistantPanel: React.FC<PharmacyAiAssistantPanelProps> =
                     <div className="p-3.5 space-y-3">
                       <div
                         data-testid="ai-assistant-answer-text"
-                        className="text-xs sm:text-sm text-slate-800 whitespace-pre-line leading-relaxed"
+                        className="text-xs sm:text-sm text-slate-800 dark:text-slate-200 whitespace-pre-line leading-relaxed"
                       >
-                        {msg.responseText}
+                        {renderFormattedAssistantText(msg.responseText)}
                       </div>
 
                       {/* Tool Calls Displayed Under Each Answer */}
                       <div
                         data-testid="ai-message-tool-calls"
-                        className="pt-2.5 border-t border-slate-100 space-y-1.5"
+                        className="pt-2.5 border-t border-slate-100 dark:border-slate-800 space-y-1.5"
                       >
                         <div className="text-[11px] font-medium text-slate-400">
                           Verified Sources ({msg.toolCalls.length})
@@ -407,17 +471,19 @@ export const PharmacyAiAssistantPanel: React.FC<PharmacyAiAssistantPanelProps> =
                                 data-testid={`ai-tool-call-${tc.name}`}
                                 className={`px-2.5 py-1.5 rounded-lg border text-[11px] font-mono ${
                                   tc.status === 'rejected_by_guard'
-                                    ? 'bg-red-50 border-red-200 text-red-900'
-                                    : 'bg-slate-50 border-slate-200/80 text-slate-700'
+                                    ? 'bg-red-50 dark:bg-red-950/40 border-red-200 dark:border-red-800 text-red-900 dark:text-red-200'
+                                    : 'bg-slate-50 dark:bg-slate-800/80 border-slate-200/80 dark:border-slate-700 text-slate-700 dark:text-slate-200'
                                 }`}
                               >
                                 <div className="flex items-center justify-between gap-2">
-                                  <span className="truncate font-semibold">{tc.name}</span>
+                                  <span className="truncate font-semibold" title={formatToolCallSignature(tc)}>
+                                    {formatToolCallSignature(tc)}
+                                  </span>
                                   <span
-                                    className={`px-1.5 py-0.5 text-[10px] rounded font-sans font-medium ${
+                                    className={`px-1.5 py-0.5 text-[10px] rounded font-sans font-medium shrink-0 ${
                                       tc.status === 'rejected_by_guard'
                                         ? 'bg-red-100 text-red-800'
-                                        : 'bg-emerald-50 text-emerald-700'
+                                        : 'bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300'
                                     }`}
                                   >
                                     {tc.status === 'rejected_by_guard' ? 'Blocked' : 'Verified'}
@@ -438,7 +504,7 @@ export const PharmacyAiAssistantPanel: React.FC<PharmacyAiAssistantPanelProps> =
           {/* Input Bar */}
           <form
             onSubmit={handleFormSubmit}
-            className="p-3.5 bg-white border-t border-slate-200 space-y-2 shrink-0"
+            className="p-3.5 bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 space-y-2 shrink-0"
           >
             {voiceStatusNote && (
               <div data-testid="ai-voice-status-note" className="text-[11px] text-slate-500 px-1">
@@ -455,8 +521,8 @@ export const PharmacyAiAssistantPanel: React.FC<PharmacyAiAssistantPanelProps> =
                 type="text"
                 value={queryInput}
                 onChange={(e) => setQueryInput(e.target.value)}
-                placeholder="Ask a question..."
-                className="flex-1 px-3.5 py-2 text-xs sm:text-sm bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-600"
+                placeholder="Type a question (e.g., How much did we sell today?)..."
+                className="flex-1 px-3.5 py-2 text-xs sm:text-sm bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-slate-100 border border-slate-200 dark:border-slate-700 rounded-xl focus:bg-white dark:focus:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-600"
               />
               <button
                 type="button"
@@ -467,7 +533,7 @@ export const PharmacyAiAssistantPanel: React.FC<PharmacyAiAssistantPanelProps> =
                 className={`p-2 rounded-xl border transition-colors ${
                   isListeningVoice
                     ? 'bg-red-50 text-red-700 border-red-200'
-                    : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
+                    : 'bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-700'
                 }`}
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">

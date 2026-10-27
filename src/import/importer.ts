@@ -45,11 +45,19 @@ export function autoSuggestColumnMapping(columns: CsvColumnMeta[]): ColumnMappin
     generic_name: ['generic_name', 'generic', 'inn', 'dci', 'active_ingredient'],
     strength: ['strength', 'dosage', 'concentration', 'dose'],
     dosage_form: ['dosage_form', 'form', 'galenic_form', 'presentation'],
-    category: ['category', 'therapeutic_class', 'class'],
+    category: ['category', 'class'],
     atc_code: ['atc_code', 'atc'],
     manufacturer: ['manufacturer', 'maker', 'lab', 'laboratory', 'mah'],
     barcode: ['barcode', 'ean', 'ean13', 'gtin', 'upc', 'cip'],
     storage: ['storage', 'storage_condition', 'temperature'],
+    posology: ['posology', 'dosage_instructions', 'posologie', 'dosing'],
+    interactions: ['interactions', 'drug_interactions', 'interactions_medicamenteuses'],
+    composition: ['composition', 'excipients', 'active_molecule', 'ingredients'],
+    therapeutic_class: ['therapeutic_class', 'classe_therapeutique', 'pharmacological_class'],
+    indications: ['indications', 'indication', 'treats', 'therapeutic_indications'],
+    precautions: ['precautions', 'warnings', 'contraindications', 'mise_en_garde'],
+    route: ['route', 'route_of_administration', 'administration_route', 'voie'],
+    side_effects: ['side_effects', 'adverse_effects', 'effets_indesirables', 'adverse_reactions'],
     zone: ['zone', 'dispensary_zone', 'room'],
     shelf: ['shelf', 'bay', 'rack'],
     bin: ['bin', 'drawer', 'slot'],
@@ -271,6 +279,16 @@ export async function prepareBulkImportPreview(
     const rawBarcode = getCellValue(row.cells, options.mapping.barcode);
     const barcode = normalizeTextField(rawBarcode);
     const storage = normalizeTextField(getCellValue(row.cells, options.mapping.storage));
+    const posology = normalizeTextField(getCellValue(row.cells, options.mapping.posology));
+    const interactions = normalizeTextField(getCellValue(row.cells, options.mapping.interactions));
+    const composition = normalizeTextField(getCellValue(row.cells, options.mapping.composition));
+    const therapeuticClass = normalizeTextField(
+      getCellValue(row.cells, options.mapping.therapeutic_class),
+    );
+    const indications = normalizeTextField(getCellValue(row.cells, options.mapping.indications));
+    const precautions = normalizeTextField(getCellValue(row.cells, options.mapping.precautions));
+    const route = normalizeTextField(getCellValue(row.cells, options.mapping.route));
+    const sideEffects = normalizeTextField(getCellValue(row.cells, options.mapping.side_effects));
 
     // Layer 2: Inventory
     const zone = normalizeTextField(getCellValue(row.cells, options.mapping.zone));
@@ -601,6 +619,14 @@ export async function prepareBulkImportPreview(
       manufacturer,
       barcode,
       storage,
+      posology,
+      interactions,
+      composition,
+      therapeutic_class: therapeuticClass,
+      indications,
+      precautions,
+      route,
+      side_effects: sideEffects,
       zone,
       shelf,
       bin,
@@ -722,6 +748,14 @@ export async function executeBulkImport(
           manufacturer: row.manufacturer ?? undefined,
           barcode: row.barcode ?? undefined,
           storage: row.storage ?? undefined,
+          posology: row.posology ?? undefined,
+          interactions: row.interactions ?? undefined,
+          composition: row.composition ?? undefined,
+          therapeutic_class: row.therapeutic_class ?? undefined,
+          indications: row.indications ?? undefined,
+          precautions: row.precautions ?? undefined,
+          route: row.route ?? undefined,
+          side_effects: row.side_effects ?? undefined,
           zone: row.zone ?? undefined,
           shelf: row.shelf ?? undefined,
           bin: row.bin ?? undefined,
@@ -747,6 +781,14 @@ export async function executeBulkImport(
           manufacturer: row.manufacturer,
           barcode: row.barcode,
           storage: row.storage,
+          posology: row.posology,
+          interactions: row.interactions,
+          composition: row.composition,
+          therapeutic_class: row.therapeutic_class,
+          indications: row.indications,
+          precautions: row.precautions,
+          route: row.route,
+          side_effects: row.side_effects,
           zone: row.zone,
           shelf: row.shelf,
           bin: row.bin,

@@ -47,6 +47,8 @@ Never perform arithmetic yourself — always call calc_price.`;
       'list_low_stock',
       'list_expiring',
       'calc_price',
+      'get_revenue',
+      'find_by_symptom_or_category',
     ]);
   });
 
@@ -173,7 +175,7 @@ Never perform arithmetic yourself — always call calc_price.`;
           contextMedicationName: 'Amoxil',
         },
       );
-      expect(calcTurn.responseText).toContain('$33.75');
+      expect(calcTurn.responseText).toContain('3,375 DA');
 
       const limiter = new AssistantRateLimiter(1, 60_000);
       await runAssistantTurn(db, "what's running low?", { rateLimiter: limiter });

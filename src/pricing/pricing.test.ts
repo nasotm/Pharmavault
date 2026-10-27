@@ -261,3 +261,110 @@ test('Deliverables 1, 3 & Constraints: Money input parsing ("12.50", "12,50", "1
     );
   }
 });
+
+test('Multi-Currency & Algerian Dinar (DA / DZD): 10 seeded currencies, currency_code default DZD, integer DZD pricing, DA display, rate updates, and Calculator DZD Grand Total', async () => {
+  const db = await SqliteWasmAdapter.create({ filename: ':memory:' });
+  await runMigrations(db);
+  await seedDatabase(db);
+  const repo = createRepository(db);
+
+  // 1. Verify 10 seeded currencies in `currencies` table
+  const currencies = await repo.listCurrencies();
+  assert.equal(currencies.length, 10);
+  const codes = currencies.map((c) => c.code);
+  for (const expectedCode of ['DZD', 'EUR', 'USD', 'GBP', 'CAD', 'CHF', 'CNY', 'TRY', 'AED', 'SAR']) {
+    assert.ok(codes.includes(expectedCode), `Expected currency ${expectedCode} to be seeded`);
+  }
+
+  const dzd = await repo.getCurrencyByCode('DZD');
+  assert.ok(dzd);
+  assert.equal(dzd.symbol, 'DA');
+  assert.equal(dzd.rate_to_da, 1);
+
+  // 2. Verify seeded medications default to currency_code = 'DZD' and integer DZD price
+  const amoxil = (await repo.getMedicationById(1))!;
+  assert.equal(amoxil.currency_code, 'DZD');
+  assert.equal(amoxil.unit_price_cents, 1250);
+
+  // 3. Verify DZD integer parsing & formatting ("1,250 DA")
+  const parsedDzd = parseMoneyInputToCents('1250', 'DZD');
+  assert.equal(parsedDzd.ok, true);
+  assert.equal(parsedDzd.cents, 1250);
+
+  const parsedDzdGrouped = parseMoneyInputToCents('1,250', 'DZD');
+  assert.equal(parsedDzdGrouped.ok, true);
+  assert.equal(parsedDzdGrouped.cents, 1250);
+
+  // 4. Verify Calculator in DZD and foreign currencies (EUR / USD) always computes Grand Total in DZD (DA)
+  const calcDzd = evaluateStandaloneCalculator({
+    items: [
+      {
+        medicationId: amoxil.id,
+        brandName: amoxil.brand_name,
+        unitPriceCents: amoxil.unit_price_cents, // 1250 DA
+        currency: 'DZD',
+        quantity: 2,
+      },
+    ],
+    discountPercent: '0',
+    taxPercent: '0',
+    currency: 'DZD',
+    currencies,
+  });
+  assert.equal(calcDzd.canComputeGrandTotal, true);
+  assert.equal(calcDzd.grandTotalCents, 2500);
+  assert.equal(calcDzd.grandTotalFormatted, '2,500 DA');
+  assert.equal(calcDzd.grandTotalDzd, 2500);
+  assert.equal(calcDzd.grandTotalDzdFormatted, '2,500 DA');
+
+  // Switch Calculator currency to EUR (rate_to_da = 146.5) with a DZD item (2 x 1465 DA = 2930 DA -> €20.00)
+  const calcInEur = evaluateStandaloneCalculator({
+    items: [
+      {
+        medicationId: amoxil.id,
+        brandName: amoxil.brand_name,
+        unitPriceCents: 1465, // 1,465 DA
+        currency: 'DZD',
+        quantity: 2,
+      },
+    ],
+    discountPercent: '0',
+    taxPercent: '0',
+    currency: 'EUR',
+    currencies,
+  });
+  assert.equal(calcInEur.canComputeGrandTotal, true);
+  assert.equal(calcInEur.grandTotalCents, 2000); // €20.00 (2000 cents)
+  assert.equal(calcInEur.grandTotalFormatted, '€20.00');
+  assert.equal(calcInEur.grandTotalDzd, 2930);
+  assert.equal(calcInEur.grandTotalDzdFormatted, '2,930 DA');
+
+  // 5. Update exchange rate in Settings (e.g., USD -> 140 DA) and verify deterministic conversion
+  const updatedUsd = await repo.updateCurrencyRate('USD', 140);
+  assert.equal(updatedUsd.rate_to_da, 140);
+  const updatedCurrencies = await repo.listCurrencies();
+
+  // Foreign currency medication ($10.00 = 1000 cents USD) in USD calculator -> $10.00 and 1,400 DA
+  const calcUsdItem = evaluateStandaloneCalculator({
+    items: [
+      {
+        medicationId: 99,
+        brandName: 'Imported Drug',
+        unitPriceCents: 1000, // $10.00
+        currency: 'USD',
+        quantity: 1,
+      },
+    ],
+    discountPercent: '0',
+    taxPercent: '0',
+    currency: 'USD',
+    currencies: updatedCurrencies,
+  });
+  assert.equal(calcUsdItem.grandTotalCents, 1000);
+  assert.equal(calcUsdItem.grandTotalFormatted, '$10.00');
+  assert.equal(calcUsdItem.grandTotalDzd, 1400);
+  assert.equal(calcUsdItem.grandTotalDzdFormatted, '1,400 DA');
+
+  await db.close();
+});
+

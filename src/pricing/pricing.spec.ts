@@ -144,9 +144,9 @@ describe('Prompt 6 Acceptance Criteria & Constraints: Pharmacist Pricing & Calcu
       unitsPerPack: manual.medication.units_per_pack,
       currency: manual.medication.currency,
     });
-    // 1995 / 30 = 66.5 -> ROUND_HALF_UP = 67 cents ($0.67)
+    // 1995 / 30 = 66.5 -> ROUND_HALF_UP = 67 Dinar ("67" DA)
     expect(derived.pricePerDoseCents).toBe(67);
-    expect(derived.pricePerDoseMajor).toBe('0.67');
+    expect(derived.pricePerDoseMajor).toBe('67');
     expect(formatCentsToMajor(null)).toBe('price not entered');
 
     await db.close();
@@ -164,5 +164,37 @@ describe('Prompt 6 Acceptance Criteria & Constraints: Pharmacist Pricing & Calcu
         `Forbidden parseFloat() found in ${path.relative(process.cwd(), filePath)}`,
       ).toBe(false);
     }
+  });
+
+  it('generates a professional PDF invoice with exact deterministic calculator totals and table columns', async () => {
+    const { buildDispensaryInvoicePdf } = await import('./invoice-pdf');
+    const evaluation = evaluateStandaloneCalculator({
+      items: [
+        {
+          medicationId: 1,
+          brandName: 'Amoxil',
+          strength: '500 mg',
+          dosageForm: 'Capsule',
+          unitPriceCents: 1250,
+          quantity: 3,
+        },
+      ],
+      discountPercent: '10',
+      taxPercent: '5',
+    });
+
+    const doc = buildDispensaryInvoicePdf({
+      evaluation,
+      currentUser: { name: 'Claire Dupont', pin: '4821' },
+      patientName: 'John Doe',
+      invoiceNumber: 'INV-100234',
+      date: new Date('2026-10-25T19:00:00Z'),
+    });
+
+    expect(doc).toBeDefined();
+    expect(doc.getNumberOfPages()).toBe(1);
+    const pdfOutput = doc.output();
+    expect(pdfOutput.length).toBeGreaterThan(500);
+    expect(pdfOutput).toContain('PharmaVault Dispensary');
   });
 });

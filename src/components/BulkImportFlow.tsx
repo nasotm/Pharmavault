@@ -30,6 +30,7 @@ import { formatCentsToMajor } from '../pricing';
 
 interface BulkImportFlowProps {
   onImportCommitted: () => Promise<void>;
+  onOpenAlgerianImport?: () => void;
 }
 
 function formatCents(cents: number | null): string {
@@ -37,7 +38,7 @@ function formatCents(cents: number | null): string {
   return `${cents} ¢ ($${formatCentsToMajor(cents)})`;
 }
 
-export function BulkImportFlow({ onImportCommitted }: BulkImportFlowProps) {
+export function BulkImportFlow({ onImportCommitted, onOpenAlgerianImport }: BulkImportFlowProps) {
   const [sourceFileName, setSourceFileName] = useState<string>('pharmacy_50_rows.csv');
   const [csvText, setCsvText] = useState<string>(() => buildPharmacy50RowCsv());
   const [hasHeaderRow, setHasHeaderRow] = useState<boolean>(true);
@@ -330,6 +331,16 @@ export function BulkImportFlow({ onImportCommitted }: BulkImportFlowProps) {
           >
             Load Catalog-Only CSV
           </button>
+          {onOpenAlgerianImport && (
+            <button
+              type="button"
+              data-testid="open-algerian-import-from-bulk-btn"
+              onClick={onOpenAlgerianImport}
+              className="px-3 py-1.5 text-xs font-semibold text-white bg-emerald-600 border border-emerald-600 rounded-md hover:bg-emerald-700 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              + Import Algerian CSV (DCI Link)
+            </button>
+          )}
         </div>
       </div>
 

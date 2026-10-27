@@ -1,15 +1,28 @@
-import React, { useMemo, useState } from 'react';
-import { getRepositoryDatabase, type MedicationWithAliases } from '../db/repository';
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  DEFAULT_CURRENCIES,
+  getRepositoryDatabase,
+  type CurrencyRecord,
+  type MedicationWithAliases,
+} from '../db/repository';
 import { formatCurrentUserIdentifier, type CurrentUserProfile } from '../movements';
 import {
+  buildDispensaryInvoicePdf,
+  CALCULATOR_INTERACTION_REFERENCE_MEDICATIONS,
+  checkCartDrugInteractions,
+  evaluateDeterministicDrugInteractions,
   evaluateStandaloneCalculator,
   formatMoneyDisplay,
+  isDzdCurrency,
   savePharmacistManualPrice,
   type CalculatorLineInput,
+  type DrugInteractionCheckResult,
+  type DrugInteractionInputItem,
 } from '../pricing';
 
 export interface StandalonePricingCalculatorProps {
   medications: MedicationWithAliases[];
+  currencies?: CurrencyRecord[];
   currentUser: CurrentUserProfile;
   onMedicationPriceUpdated: () => Promise<void> | void;
 }
@@ -21,16 +34,52 @@ interface SelectedBasketLine {
 
 export const StandalonePricingCalculator: React.FC<StandalonePricingCalculatorProps> = ({
   medications,
+  currencies = DEFAULT_CURRENCIES,
   currentUser,
   onMedicationPriceUpdated,
 }) => {
-  const [basket, setBasket] = useState<SelectedBasketLine[]>([
-    { medicationId: 1, quantity: 3 },
-  ]);
+  const activeCurrencies = useMemo<readonly CurrencyRecord[]>(
+    () => (currencies && currencies.length > 0 ? currencies : DEFAULT_CURRENCIES),
+    [currencies],
+  );
+  const [selectedCurrency, setSelectedCurrency] = useState<string>('DZD');
+
+  const availableMedications = useMemo<MedicationWithAliases[]>(() => {
+    const existingIds = new Set(medications.map((m) => m.id));
+    const extras = CALCULATOR_INTERACTION_REFERENCE_MEDICATIONS.filter(
+      (ref) => !existingIds.has(ref.id),
+    );
+    return [...medications, ...extras];
+  }, [medications]);
+
+  const [basket, setBasket] = useState<SelectedBasketLine[]>(() => {
+    try {
+      const raw =
+        typeof window !== 'undefined' && window.localStorage
+          ? window.localStorage.getItem('pharmavault_prescription_cart_v1')
+          : null;
+      if (raw) {
+        const parsed = JSON.parse(raw) as Array<{ medicationId: number; quantity: number }>;
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.map((item) => ({
+            medicationId: Number(item.medicationId),
+            quantity: Math.max(1, Number(item.quantity) || 1),
+          }));
+        }
+      }
+    } catch {
+      // Ignore storage read errors
+    }
+    return [{ medicationId: 1, quantity: 3 }];
+  });
   const [discountInput, setDiscountInput] = useState<string>('10');
   const [taxInput, setTaxInput] = useState<string>('5');
   const [medicationIdToAdd, setMedicationIdToAdd] = useState<number>(() => medications[1]?.id ?? 2);
   const [quantityToAdd, setQuantityToAdd] = useState<string>('1');
+
+  const [patientNameInput, setPatientNameInput] = useState<string>('');
+  const [isExportingPdf, setIsExportingPdf] = useState<boolean>(false);
+  const [pdfExportNotice, setPdfExportNotice] = useState<string | null>(null);
 
   const [inlinePriceDrafts, setInlinePriceDrafts] = useState<Record<number, string>>({});
   const [inlineSavingMedId, setInlineSavingMedId] = useState<number | null>(null);
@@ -40,7 +89,7 @@ export const StandalonePricingCalculator: React.FC<StandalonePricingCalculatorPr
   const calculatorInputItems = useMemo<CalculatorLineInput[]>(() => {
     const result: CalculatorLineInput[] = [];
     for (const entry of basket) {
-      const med = medications.find((m) => m.id === entry.medicationId);
+      const med = availableMedications.find((m) => m.id === entry.medicationId);
       if (!med) continue;
       result.push({
         medicationId: med.id,
@@ -49,12 +98,66 @@ export const StandalonePricingCalculator: React.FC<StandalonePricingCalculatorPr
         strength: med.strength,
         dosageForm: med.dosage_form,
         unitPriceCents: med.unit_price_cents,
-        currency: med.currency,
+        currency: med.currency_code || med.currency || 'DZD',
         quantity: entry.quantity,
       });
     }
     return result;
-  }, [basket, medications]);
+  }, [basket, availableMedications]);
+
+  const interactionCheckItems = useMemo<DrugInteractionInputItem[]>(() => {
+    const result: DrugInteractionInputItem[] = [];
+    for (const entry of basket) {
+      const med = availableMedications.find((m) => m.id === entry.medicationId);
+      if (!med) continue;
+      result.push({
+        medicationId: med.id,
+        brandName: med.brand_name,
+        genericName: med.generic_name,
+        atcCode: med.atc_code,
+      });
+    }
+    return result;
+  }, [basket, availableMedications]);
+
+  const [interactionResult, setInteractionResult] = useState<DrugInteractionCheckResult>(() =>
+    evaluateDeterministicDrugInteractions([]),
+  );
+  const [isCheckingInteractions, setIsCheckingInteractions] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (interactionCheckItems.length < 2) {
+      setInteractionResult(evaluateDeterministicDrugInteractions(interactionCheckItems));
+      setIsCheckingInteractions(false);
+      return;
+    }
+
+    // Immediate deterministic check for zero-latency safety, followed by background AI pharmacist verification
+    const immediate = evaluateDeterministicDrugInteractions(interactionCheckItems);
+    setInteractionResult(immediate);
+
+    const controller = new AbortController();
+    setIsCheckingInteractions(true);
+
+    void checkCartDrugInteractions(interactionCheckItems, {
+      signal: controller.signal,
+    })
+      .then((res) => {
+        if (!controller.signal.aborted) {
+          setInteractionResult(res);
+          setIsCheckingInteractions(false);
+        }
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          setIsCheckingInteractions(false);
+        }
+      });
+
+    return () => {
+      controller.abort();
+    };
+  }, [interactionCheckItems]);
 
   const evaluation = useMemo(
     () =>
@@ -62,8 +165,10 @@ export const StandalonePricingCalculator: React.FC<StandalonePricingCalculatorPr
         items: calculatorInputItems,
         discountPercent: discountInput,
         taxPercent: taxInput,
+        currency: selectedCurrency,
+        currencies: activeCurrencies,
       }),
-    [calculatorInputItems, discountInput, taxInput],
+    [calculatorInputItems, discountInput, taxInput, selectedCurrency, activeCurrencies],
   );
 
   const handleAddMedicationToBasket = (e: React.FormEvent) => {
@@ -127,6 +232,30 @@ export const StandalonePricingCalculator: React.FC<StandalonePricingCalculatorPr
     }
   };
 
+  const handleExportPdfInvoice = () => {
+    if (!evaluation.canComputeGrandTotal || calculatorInputItems.length === 0) {
+      return;
+    }
+    setIsExportingPdf(true);
+    setPdfExportNotice(null);
+    try {
+      const doc = buildDispensaryInvoicePdf({
+        evaluation,
+        currentUser,
+        patientName: patientNameInput,
+      });
+      const filename = `pharmavault-invoice-${Date.now().toString().slice(-6)}.pdf`;
+      doc.save(filename);
+      setPdfExportNotice(`Invoice exported successfully as ${filename}`);
+    } catch (err: unknown) {
+      setPdfExportNotice(
+        `Failed to generate PDF: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      setIsExportingPdf(false);
+    }
+  };
+
   return (
     <section
       id="standalone-pricing-calculator"
@@ -139,7 +268,7 @@ export const StandalonePricingCalculator: React.FC<StandalonePricingCalculatorPr
             Prescription Price Calculator
           </h2>
           <p className="text-xs text-slate-500 mt-0.5">
-            Calculate multi-item dispensing totals with optional discount and tax percentages.
+            Calculate multi-item dispensing totals with optional discount, tax percentages, and AI pharmacist interaction screening.
           </p>
         </div>
 
@@ -156,7 +285,22 @@ export const StandalonePricingCalculator: React.FC<StandalonePricingCalculatorPr
             }}
             className="px-3 py-1.5 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
           >
-            Sample: 3 &times; $12.50 (10% off, 5% tax)
+            Sample: 3 &times; 1,250 DA (10% off, 5% tax)
+          </button>
+          <button
+            type="button"
+            data-testid="calc-preset-warfarin-aspirin-btn"
+            onClick={() => {
+              setBasket([
+                { medicationId: 9001, quantity: 1 },
+                { medicationId: 9002, quantity: 1 },
+              ]);
+              setInlineError(null);
+              setInlineSuccess(null);
+            }}
+            className="px-3 py-1.5 text-xs font-medium text-red-800 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 transition-colors"
+          >
+            Sample: Warfarin + Aspirin Interaction
           </button>
           <button
             type="button"
@@ -197,12 +341,16 @@ export const StandalonePricingCalculator: React.FC<StandalonePricingCalculatorPr
                 onChange={(e) => setMedicationIdToAdd(Number(e.target.value))}
                 className="w-full px-3 py-2 text-xs bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-600"
               >
-                {medications.map((med) => (
+                {availableMedications.map((med) => (
                   <option key={med.id} value={med.id}>
-                    {med.brand_name} ({med.strength ?? '—'}) —{' '}
+                    {med.brand_name} ({med.generic_name} · {med.strength ?? '—'}) —{' '}
                     {med.unit_price_cents === null
                       ? 'price not entered'
-                      : formatMoneyDisplay(med.unit_price_cents, med.currency)}
+                      : formatMoneyDisplay(
+                          med.unit_price_cents,
+                          med.currency_code || med.currency || 'DZD',
+                          { currencies: activeCurrencies },
+                        )}
                   </option>
                 ))}
               </select>
@@ -235,6 +383,77 @@ export const StandalonePricingCalculator: React.FC<StandalonePricingCalculatorPr
               Add Item
             </button>
           </form>
+
+          {/* AI Pharmacist Drug Interaction Red Alert Banner (above the cart) */}
+          {interactionCheckItems.length >= 2 && interactionResult.hasMajorInteraction && (
+            <div
+              role="alert"
+              aria-live="assertive"
+              data-testid="calculator-drug-interaction-banner"
+              className="p-4 bg-red-50 border-2 border-red-300 rounded-xl shadow-2xs space-y-2.5"
+            >
+              <div className="flex items-start gap-3">
+                <div className="w-8 h-8 rounded-lg bg-red-600 text-white flex items-center justify-center shrink-0 mt-0.5">
+                  <svg
+                    className="w-4 h-4"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={2.2}
+                    aria-hidden="true"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"
+                    />
+                  </svg>
+                </div>
+
+                <div className="flex-1 min-w-0 space-y-1.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-red-800">
+                      AI Pharmacist Interaction Alert
+                    </span>
+                    {isCheckingInteractions && (
+                      <span className="text-[11px] font-medium text-red-700">
+                        Verifying with AI Assistant...
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="space-y-1.5">
+                    {interactionResult.interactions.map((interaction, idx) => (
+                      <div
+                        key={`${interaction.drugA}-${interaction.drugB}-${idx}`}
+                        data-testid={`calculator-interaction-item-${idx}`}
+                        className="space-y-0.5"
+                      >
+                        <p
+                          data-testid="calculator-interaction-warning-text"
+                          className="text-xs font-bold text-red-950"
+                        >
+                          {interaction.bannerMessage}
+                        </p>
+                        {interaction.clinicalSummary && (
+                          <p className="text-xs text-red-800 leading-relaxed">
+                            {interaction.clinicalSummary}
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  <p
+                    data-testid="calculator-interaction-disclaimer"
+                    className="pt-1.5 border-t border-red-200/80 text-[11px] font-medium text-red-900"
+                  >
+                    {interactionResult.disclaimer}
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Selected Line Items Table */}
           <div className="border border-slate-200 rounded-xl overflow-hidden">
@@ -269,7 +488,7 @@ export const StandalonePricingCalculator: React.FC<StandalonePricingCalculatorPr
                       <td className="py-3 px-3.5 font-sans">
                         <div className="font-semibold text-slate-900">{line.brandName}</div>
                         <div className="text-[11px] text-slate-500">
-                          {line.strength ?? '—'} · {line.dosageForm ?? '—'}
+                          {line.genericName} · {line.strength ?? '—'} · {line.dosageForm ?? '—'}
                         </div>
                       </td>
 
@@ -419,8 +638,31 @@ export const StandalonePricingCalculator: React.FC<StandalonePricingCalculatorPr
           )}
         </div>
 
-        {/* Right column: Discount %, Tax %, and Summary Totals */}
+        {/* Right column: Currency Selector, Discount %, Tax %, and Summary Totals */}
         <div className="lg:col-span-5 bg-slate-50 border border-slate-200/80 rounded-xl p-5 space-y-5">
+          <div>
+            <label
+              htmlFor="calc-currency-select"
+              className="block text-xs font-medium text-slate-700 mb-1"
+            >
+              Calculator Currency (Base: Algerian Dinar DA)
+            </label>
+            <select
+              id="calc-currency-select"
+              data-testid="calc-currency-select"
+              value={selectedCurrency}
+              onChange={(e) => setSelectedCurrency(e.target.value)}
+              className="w-full px-3 py-2 text-xs font-mono bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-600"
+            >
+              {activeCurrencies.map((cur) => (
+                <option key={cur.code} value={cur.code}>
+                  {cur.code} — {cur.name} ({cur.symbol})
+                  {cur.code === 'DZD' ? ' [Base]' : ` [1 ${cur.code} = ${cur.rate_to_da} DA]`}
+                </option>
+              ))}
+            </select>
+          </div>
+
           <div className="grid grid-cols-2 gap-3.5">
             <div>
               <label
@@ -485,31 +727,108 @@ export const StandalonePricingCalculator: React.FC<StandalonePricingCalculatorPr
               </strong>
             </div>
 
-            <div className="border-t border-slate-200 pt-3.5 flex items-baseline justify-between">
-              <span className="text-sm font-bold text-slate-900 font-sans">Grand Total</span>
-              {evaluation.canComputeGrandTotal ? (
-                <div className="text-right">
-                  <div
-                    data-testid="calc-grand-total-value"
-                    className="text-2xl font-bold text-slate-900"
-                  >
-                    {evaluation.grandTotalFormatted}
-                  </div>
-                  <div
-                    data-testid="calc-grand-total-major"
-                    className="sr-only"
-                  >
-                    {evaluation.grandTotalMajor}
-                  </div>
+            <div className="border-t border-slate-200 pt-3.5 space-y-3">
+              <div className="flex items-baseline justify-between gap-4">
+                <div>
+                  <span className="text-sm font-bold text-slate-900 font-sans block">
+                    Grand Total
+                  </span>
+                  {!isDzdCurrency(evaluation.currency) && evaluation.canComputeGrandTotal && (
+                    <span className="text-[11px] font-sans text-slate-500">
+                      Rate: 1 {evaluation.currency} = {evaluation.exchangeRateToDa} DA
+                    </span>
+                  )}
                 </div>
-              ) : (
-                <div
-                  data-testid="calc-grand-total-refused"
-                  className="text-xs font-semibold text-red-700 font-sans text-right max-w-[220px]"
+                {evaluation.canComputeGrandTotal ? (
+                  <div className="text-right space-y-1">
+                    <div
+                      data-testid="calc-grand-total-dzd"
+                      className="text-2xl font-bold text-slate-900"
+                    >
+                      {evaluation.grandTotalDzdFormatted}
+                    </div>
+                    <div
+                      data-testid="calc-grand-total-value"
+                      className={
+                        isDzdCurrency(evaluation.currency)
+                          ? 'text-xs font-semibold text-sky-700 font-sans'
+                          : 'text-sm font-bold text-sky-700'
+                      }
+                    >
+                      {isDzdCurrency(evaluation.currency)
+                        ? `${evaluation.grandTotalFormatted} (DZD)`
+                        : `${evaluation.grandTotalFormatted} (${evaluation.currency})`}
+                    </div>
+                    <div
+                      data-testid="calc-grand-total-major"
+                      className="sr-only"
+                    >
+                      {evaluation.grandTotalMajor}
+                    </div>
+                  </div>
+                ) : (
+                  <div
+                    data-testid="calc-grand-total-refused"
+                    className="text-xs font-semibold text-red-700 font-sans text-right max-w-[220px]"
+                  >
+                    price not entered — set price to include in total
+                  </div>
+                )}
+              </div>
+
+              {/* Patient Name field & Export PDF Invoice button */}
+              <div className="pt-2 border-t border-slate-200/80 space-y-2.5 font-sans">
+                <div>
+                  <label
+                    htmlFor="calc-patient-name-input"
+                    className="block text-[11px] font-medium text-slate-600 mb-1"
+                  >
+                    Patient / Customer Name (Optional for Invoice)
+                  </label>
+                  <input
+                    id="calc-patient-name-input"
+                    data-testid="calc-patient-name-input"
+                    type="text"
+                    value={patientNameInput}
+                    onChange={(e) => setPatientNameInput(e.target.value)}
+                    placeholder="e.g. John Doe"
+                    className="w-full px-3 py-1.5 text-xs bg-white border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-600"
+                  />
+                </div>
+
+                <button
+                  type="button"
+                  data-testid="export-pdf-invoice-btn"
+                  onClick={handleExportPdfInvoice}
+                  disabled={!evaluation.canComputeGrandTotal || calculatorInputItems.length === 0 || isExportingPdf}
+                  className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-700 active:bg-sky-800 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl shadow-xs hover:shadow transition-all"
                 >
-                  price not entered — set price to include in total
-                </div>
-              )}
+                  <svg
+                    className="w-4 h-4 text-white"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                    aria-hidden="true"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                    />
+                  </svg>
+                  <span>{isExportingPdf ? 'Generating PDF...' : 'Export PDF Invoice'}</span>
+                </button>
+
+                {pdfExportNotice && (
+                  <div
+                    data-testid="pdf-export-notice"
+                    className="text-[11px] p-2 bg-emerald-50 text-emerald-800 border border-emerald-200 rounded-lg text-center"
+                  >
+                    {pdfExportNotice}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>

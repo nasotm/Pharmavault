@@ -67,4 +67,28 @@ describe('Primary Search Experience — 3-Layer Search & 5,000-Row Sub-100ms Acc
     expect(lantusDetail!.batches).toHaveLength(2);
     expect(lantusDetail!.totalStock).toBe(30);
   });
+
+  it('updates physical location (zone, shelf, bin, location_note) and immediately reflects in search detail', async () => {
+    const { updateMedicationLocalInventory } = await import('../db/repository');
+    await seed5000Medications(db, 5);
+
+    const initialDetail = await getMedicationDetailForSearch(db, 1);
+    expect(initialDetail).not.toBeNull();
+
+    await updateMedicationLocalInventory(db, 1, {
+      zone: 'Zone Z',
+      shelf: 'Shelf 99',
+      bin: 'Bin 42',
+      location_note: 'Special handling - keep cold',
+    });
+
+    const updatedDetail = await getMedicationDetailForSearch(db, 1);
+    expect(updatedDetail).not.toBeNull();
+    expect(updatedDetail!.medication.zone).toBe('Zone Z');
+    expect(updatedDetail!.medication.shelf).toBe('Shelf 99');
+    expect(updatedDetail!.medication.bin).toBe('Bin 42');
+    expect(updatedDetail!.medication.location_note).toBe('Special handling - keep cold');
+    expect(updatedDetail!.locationDisplay).toBe('Zone Z · Shelf 99 · Bin 42');
+  });
 });
+

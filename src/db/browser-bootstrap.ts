@@ -9,11 +9,13 @@ import {
   getMedicationWithAliases,
   getTotalStock,
   listBatchesForMedication,
+  listCurrencies,
   listMedications,
   listMovementsForMedication,
   listPriceHistoryForMedication,
   setRepositoryDatabase,
   type Batch,
+  type CurrencyRecord,
   type MedicationWithAliases,
   type PriceHistory,
   type StockMovement,
@@ -42,6 +44,7 @@ export interface FoundationBootSnapshot {
   totalStockAcrossAll: number;
   totalPriceHistoryCount: number;
   unconfirmedOrNullPriceCount: number;
+  currencies: CurrencyRecord[];
   items: MedicationFoundationSnapshot[];
 }
 
@@ -173,8 +176,11 @@ export async function loadFoundationSnapshot(): Promise<FoundationBootSnapshot> 
     });
   }
 
+  const [currencies, isolation] = await Promise.all([
+    listCurrencies(activeAdapter),
+    detectCrossOriginIsolation( activeAdapter.getStorageMode() ),
+  ]);
   const storageMode = activeAdapter.getStorageMode();
-  const isolation = await detectCrossOriginIsolation(storageMode);
 
   return {
     storageMode,
@@ -187,6 +193,7 @@ export async function loadFoundationSnapshot(): Promise<FoundationBootSnapshot> 
     totalStockAcrossAll: Number(summary.total_stock),
     totalPriceHistoryCount: Number(summary.total_price_history),
     unconfirmedOrNullPriceCount: Number(summary.unconfirmed_or_null),
+    currencies,
     items,
   };
 }

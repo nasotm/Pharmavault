@@ -11,7 +11,15 @@ export type CatalogFieldKey =
   | 'atc_code'
   | 'manufacturer'
   | 'barcode'
-  | 'storage';
+  | 'storage'
+  | 'posology'
+  | 'interactions'
+  | 'composition'
+  | 'therapeutic_class'
+  | 'indications'
+  | 'precautions'
+  | 'route'
+  | 'side_effects';
 
 export type InventoryFieldKey =
   | 'zone'
@@ -66,7 +74,7 @@ export const CATALOG_FIELDS: readonly TargetFieldDescriptor[] = [
     key: 'category',
     label: 'category',
     layer: 'CATALOG',
-    description: 'Therapeutic class or category',
+    description: 'General category',
   },
   {
     key: 'atc_code',
@@ -91,6 +99,54 @@ export const CATALOG_FIELDS: readonly TargetFieldDescriptor[] = [
     label: 'storage',
     layer: 'CATALOG',
     description: 'Storage condition (e.g. Ambient 15-25C, Refrigerated 2-8C)',
+  },
+  {
+    key: 'posology',
+    label: 'posology',
+    layer: 'CATALOG',
+    description: 'Dosage instructions and administration schedule',
+  },
+  {
+    key: 'interactions',
+    label: 'interactions',
+    layer: 'CATALOG',
+    description: 'Known drug-drug or clinical interactions',
+  },
+  {
+    key: 'composition',
+    label: 'composition',
+    layer: 'CATALOG',
+    description: 'Active molecule and excipients',
+  },
+  {
+    key: 'therapeutic_class',
+    label: 'therapeutic_class',
+    layer: 'CATALOG',
+    description: 'Pharmacological / therapeutic class (e.g. Antibiotic, Antihypertensive)',
+  },
+  {
+    key: 'indications',
+    label: 'indications',
+    layer: 'CATALOG',
+    description: 'Clinical indications (what it treats)',
+  },
+  {
+    key: 'precautions',
+    label: 'precautions',
+    layer: 'CATALOG',
+    description: 'Clinical warnings, contraindications, and precautions',
+  },
+  {
+    key: 'route',
+    label: 'route',
+    layer: 'CATALOG',
+    description: 'Route of administration (e.g. Oral, IV, Topical, Inhalation)',
+  },
+  {
+    key: 'side_effects',
+    label: 'side_effects',
+    layer: 'CATALOG',
+    description: 'Adverse effects and known side effects',
   },
 ] as const;
 
@@ -329,6 +385,14 @@ export interface NormalizedImportRow {
   manufacturer: string | null;
   barcode: string | null;
   storage: string | null;
+  posology: string | null;
+  interactions: string | null;
+  composition: string | null;
+  therapeutic_class: string | null;
+  indications: string | null;
+  precautions: string | null;
+  route: string | null;
+  side_effects: string | null;
   // Layer 2: Inventory
   zone: string | null;
   shelf: string | null;

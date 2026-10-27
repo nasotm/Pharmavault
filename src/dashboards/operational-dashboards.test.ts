@@ -6,10 +6,12 @@ import { seedDatabase } from '../db/seed';
 import { SqliteWasmAdapter } from '../db/sqlite-wasm-adapter';
 import { dispenseStock, receiveStock } from '../movements';
 import {
+  calculateStockoutPredictionMetrics,
   exportExpiringSoonToCsv,
   exportLowStockToCsv,
   queryExpiringSoonDashboard,
   queryLowStockDashboard,
+  queryStockoutPredictions,
 } from './operational-dashboards';
 
 test('Prompt 5 Acceptance: With seeded data, low-stock list matches hand-written SQL query exactly and falls back to "low" badge before outflow movements', async () => {
@@ -287,3 +289,159 @@ test('Expiring-soon dashboard lists batches expiring within 90 days grouped by m
 
   await db.close();
 });
+
+test('AI Stockout Prediction: pure TypeScript math calculates Avg Daily Usage, Days Remaining, and Critical Prediction deterministically', () => {
+  // 1. Critical Prediction: currentStock = 6, totalOutflow30d = 90 -> avgDailyUsage = 3.0 -> daysRemaining = 2.0 (< 7)
+  const critical = calculateStockoutPredictionMetrics({
+    currentStock: 6,
+    totalOutflow30d: 90,
+    outflowMovementCount30d: 2,
+  });
+  assert.equal(critical.avgDailyUsage, 3.0);
+  assert.equal(critical.daysRemaining, 2.0);
+  assert.equal(critical.hasSufficientHistory, true);
+  assert.equal(critical.isCriticalPrediction, true);
+  assert.equal(critical.predictionLabel, 'Critical Prediction');
+
+  // 2. Stable (>= 7 days remaining): currentStock = 21, totalOutflow30d = 90 -> avgDailyUsage = 3.0 -> daysRemaining = 7.0 (not < 7)
+  const stableBoundary = calculateStockoutPredictionMetrics({
+    currentStock: 21,
+    totalOutflow30d: 90,
+    outflowMovementCount30d: 1,
+  });
+  assert.equal(stableBoundary.avgDailyUsage, 3.0);
+  assert.equal(stableBoundary.daysRemaining, 7.0);
+  assert.equal(stableBoundary.hasSufficientHistory, true);
+  assert.equal(stableBoundary.isCriticalPrediction, false);
+  assert.equal(stableBoundary.predictionLabel, 'Stable');
+
+  // 3. Insufficient History (no negative movements in last 30d): must NOT flag Critical Prediction even if currentStock is 0
+  const noHistory = calculateStockoutPredictionMetrics({
+    currentStock: 0,
+    totalOutflow30d: 0,
+    outflowMovementCount30d: 0,
+  });
+  assert.equal(noHistory.avgDailyUsage, 0);
+  assert.equal(noHistory.daysRemaining, null);
+  assert.equal(noHistory.hasSufficientHistory, false);
+  assert.equal(noHistory.isCriticalPrediction, false);
+  assert.equal(noHistory.predictionLabel, 'Insufficient History');
+});
+
+test('AI Stockout Prediction: SQL query and view compute 30-day average daily usage, Days Remaining = Current Stock / Avg Daily Usage, and Critical Prediction flag', async () => {
+  const db = await SqliteWasmAdapter.create({ filename: ':memory:' });
+  await runMigrations(db);
+  await seedDatabase(db);
+
+  const refTimestamp = '2026-10-25T12:00:00.000Z';
+
+  // 1. Before any negative stock movements, positive initial_receipt movements are ignored
+  const initialPredictions = await queryStockoutPredictions(db, {
+    referenceTimestamp: refTimestamp,
+  });
+  assert.equal(initialPredictions.length, 5);
+  for (const row of initialPredictions) {
+    assert.equal(row.total_outflow_30d, 0);
+    assert.equal(row.avg_daily_usage, 0);
+    assert.equal(row.days_remaining, null);
+    assert.equal(row.has_sufficient_history, false);
+    assert.equal(row.is_critical_prediction, false);
+    assert.equal(row.prediction_label, 'Insufficient History');
+  }
+
+  // 2. Record a negative movement OLDER than 30 days (45 days before refTimestamp) -> must be ignored by 30-day window
+  const oldReceipt = await receiveStock(db, {
+    medicationId: 4, // Lipitor
+    lotNumber: 'LIP-OLD',
+    expiryDate: '2028-01-31',
+    quantity: 60,
+    reason: 'old_restock',
+    userId: 'pharmacist:test',
+    createdAt: '2026-09-01T10:00:00.000Z',
+  });
+  await dispenseStock(db, {
+    medicationId: 4,
+    batchId: oldReceipt.batch.id,
+    quantity: 60,
+    reason: 'dispense:old',
+    userId: 'pharmacist:test',
+    createdAt: '2026-09-05T10:00:00.000Z', // 50 days before 2026-10-25
+  });
+
+  // 3. Record 30-day negative movements for Ventolin HFA (#2, current_stock = 6):
+  // Receive 90 and dispense 90 within the 30-day window -> current_stock remains 6, total_outflow_30d = 90
+  // avg_daily_usage = 90 / 30 = 3.0
+  // days_remaining = 6 / 3.0 = 2.0 (< 7 -> Critical Prediction!)
+  const ventolinReceipt = await receiveStock(db, {
+    medicationId: 2,
+    lotNumber: 'VEN-30D',
+    expiryDate: '2027-06-01',
+    quantity: 90,
+    reason: 'restock',
+    userId: 'pharmacist:claire.dupont',
+    createdAt: '2026-10-10T09:00:00.000Z',
+  });
+  await dispenseStock(db, {
+    medicationId: 2,
+    batchId: ventolinReceipt.batch.id,
+    quantity: 90,
+    reason: 'dispense',
+    userId: 'pharmacist:claire.dupont',
+    createdAt: '2026-10-18T11:00:00.000Z',
+  });
+
+  // 4. Record 30-day negative movement for Amoxil (#1, current_stock = 125 -> dispense 25 -> current_stock = 100):
+  // total_outflow_30d = 25 -> avg_daily_usage = 25 / 30 = 0.8333...
+  // days_remaining = 100 / (25 / 30) = 120.0 (>= 7 -> Stable)
+  await dispenseStock(db, {
+    medicationId: 1,
+    quantity: 25,
+    reason: 'dispense',
+    userId: 'pharmacist:claire.dupont',
+    createdAt: '2026-10-20T15:00:00.000Z',
+  });
+
+  const predictions = await queryStockoutPredictions(db, {
+    referenceTimestamp: refTimestamp,
+  });
+
+  // First item sorted by urgency: Ventolin HFA (#2) with 2.0 days remaining (Critical Prediction)
+  const ventolinPred = predictions[0];
+  assert.equal(ventolinPred.medication_id, 2);
+  assert.equal(ventolinPred.brand_name, 'Ventolin HFA');
+  assert.equal(ventolinPred.current_stock, 6);
+  assert.equal(ventolinPred.total_outflow_30d, 90);
+  assert.equal(ventolinPred.avg_daily_usage, 3.0);
+  assert.equal(ventolinPred.days_remaining, 2.0);
+  assert.equal(ventolinPred.has_sufficient_history, true);
+  assert.equal(ventolinPred.is_critical_prediction, true);
+  assert.equal(ventolinPred.prediction_label, 'Critical Prediction');
+
+  // Second item with history: Amoxil (#1) with 120.0 days remaining (Stable)
+  const amoxilPred = predictions[1];
+  assert.equal(amoxilPred.medication_id, 1);
+  assert.equal(amoxilPred.brand_name, 'Amoxil');
+  assert.equal(amoxilPred.current_stock, 100);
+  assert.equal(amoxilPred.total_outflow_30d, 25);
+  assert.ok(Math.abs(amoxilPred.avg_daily_usage - 25 / 30) < 1e-9);
+  assert.ok(Math.abs((amoxilPred.days_remaining ?? 0) - 120.0) < 1e-9);
+  assert.equal(amoxilPred.has_sufficient_history, true);
+  assert.equal(amoxilPred.is_critical_prediction, false);
+  assert.equal(amoxilPred.prediction_label, 'Stable');
+
+  // Lipitor (#4) had only a movement 50 days ago, so 30d outflow is 0
+  const lipitorPred = predictions.find((p) => p.medication_id === 4);
+  assert.ok(lipitorPred);
+  assert.equal(lipitorPred.total_outflow_30d, 0);
+  assert.equal(lipitorPred.days_remaining, null);
+  assert.equal(lipitorPred.is_critical_prediction, false);
+
+  // Verify SQL view v_stockout_prediction_30d exists and is queryable
+  const viewRows = await db.query<{ medication_id: number; current_stock: number }>(
+    'SELECT medication_id, current_stock FROM v_stockout_prediction_30d ORDER BY medication_id ASC',
+  );
+  assert.equal(viewRows.length, 5);
+
+  await db.close();
+});
+

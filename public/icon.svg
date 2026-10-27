@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0284c7" />
+      <stop offset="100%" stop-color="#0369a1" />
+    </linearGradient>
+  </defs>
+  <!-- Rounded square background in primary sky-600 blue -->
+  <rect width="512" height="512" rx="112" fill="url(#bgGrad)" />
+  <!-- Subtle inner border ring -->
+  <rect x="28" y="28" width="456" height="456" rx="88" fill="none" stroke="#ffffff" stroke-opacity="0.18" stroke-width="8" />
+  <!-- Medical Pharmacy Cross -->
+  <path
+    d="M216 112h80a16 16 0 0 1 16 16v88h88a16 16 0 0 1 16 16v48a16 16 0 0 1-16 16h-88v88a16 16 0 0 1-16 16h-80a16 16 0 0 1-16-16v-88h-88a16 16 0 0 1-16-16v-48a16 16 0 0 1 16-16h88v-88a16 16 0 0 1 16-16z"
+    fill="#ffffff"
+  />
+</svg>
