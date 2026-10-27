@@ -50,14 +50,10 @@ import {
 } from './utils/animations';
 
 import {
-  SEARCH_BACKGROUND_IMAGE_URL,
   SEARCH_BACKGROUND_OVERLAY_CLASSES,
-  resolveSearchBackgroundImageUrl,
 } from './utils/glassmorphism';
 
 type WorkspaceTab = 'search' | 'dashboard' | 'inventory' | 'settings';
-
-export { SEARCH_BACKGROUND_IMAGE_URL, resolveSearchBackgroundImageUrl };
 
 export default function App() {
   const { isDark, toggleTheme } = useTheme();
@@ -310,22 +306,13 @@ export default function App() {
           <motion.main
             key="search"
             data-testid="search-screen-container"
-            data-bg-image={SEARCH_BACKGROUND_IMAGE_URL}
             initial={TAB_CONTENT_VARIANTS.initial}
             animate={TAB_CONTENT_VARIANTS.animate}
             exit={TAB_CONTENT_VARIANTS.exit}
             transition={TAB_CONTENT_TRANSITION}
-            className="flex-1 w-full bg-cover bg-center bg-no-repeat bg-fixed relative flex flex-col"
-            style={{
-              backgroundImage: `url('${resolveSearchBackgroundImageUrl(SEARCH_BACKGROUND_IMAGE_URL)}')`,
-            }}
+            className={SEARCH_BACKGROUND_OVERLAY_CLASSES}
           >
-            {/* Heavy white/dark overlay + backdrop-blur for calm, high-contrast readability */}
-            <div
-              data-testid="search-background-overlay"
-              className={SEARCH_BACKGROUND_OVERLAY_CLASSES}
-            >
-              <div className="flex-1 max-w-7xl w-full mx-auto px-6 py-8">
+            <div className="flex-1 max-w-7xl w-full mx-auto px-6 py-8">
                 {error && (
                   <div
                     role="alert"
@@ -341,7 +328,6 @@ export default function App() {
                   onDatabaseMutated={refreshSnapshot}
                 />
               </div>
-            </div>
           </motion.main>
         ) : (
           <motion.main

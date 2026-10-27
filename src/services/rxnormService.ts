@@ -26,7 +26,7 @@ export class ExtendedRxNorm extends RxNorm {
       const url = `https://rxnav.nlm.nih.gov/REST/interaction/interaction.json?rxcui=${encodeURIComponent(
         rxcui.trim(),
       )}`;
-      const res = await fetch(url);
+      const res = await fetch(url, { mode: 'cors' });
       if (!res.ok) {
         return [];
       }

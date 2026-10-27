@@ -248,6 +248,7 @@ export async function searchBdpm(query: string): Promise<BdpmSearchResult[]> {
 
     const res = await fetch(url, {
       signal: controller.signal,
+      mode: 'cors',
       headers: { Accept: 'application/json' },
     }).catch(() => null);
 
@@ -331,6 +332,7 @@ export async function getBdpmComposition(cis: string): Promise<BdpmCompositionRe
 
     const res = await fetch(url, {
       signal: controller.signal,
+      mode: 'cors',
       headers: { Accept: 'application/json' },
     }).catch(() => null);
 

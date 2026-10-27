@@ -21,6 +21,7 @@ describe('OpenFDA Service & Modal Integration Requirements', () => {
 
     expect(fetchSpy).toHaveBeenCalledWith(
       expect.stringContaining('https://api.fda.gov/drug/label.json?search=openfda.rxcui:860975'),
+      { mode: 'cors' },
     );
     expect(label).not.toBeNull();
     expect(label?.indications).toBe('Used for management of type 2 diabetes mellitus.');

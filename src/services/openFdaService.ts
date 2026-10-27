@@ -29,7 +29,7 @@ export async function getFdaDrugLabel(rxcui: string): Promise<FdaDrugLabel | nul
 
   try {
     const url = `https://api.fda.gov/drug/label.json?search=openfda.rxcui:${encodeURIComponent(cleaned)}&limit=1`;
-    const res = await fetch(url);
+    const res = await fetch(url, { mode: 'cors' });
 
     if (!res.ok) {
       return null;
