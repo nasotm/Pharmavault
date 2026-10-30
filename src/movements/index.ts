@@ -1,4 +1,5 @@
 export {
+  confirmCalculatorSale,
   CURRENT_USER_STORAGE_KEY,
   DEFAULT_CURRENT_USER,
   dispenseStock,
@@ -10,6 +11,9 @@ export {
   saveCurrentUserProfile,
   selectFefoBatch,
   sortBatchesFefo,
+  type ConfirmSaleCartItem,
+  type ConfirmSaleInput,
+  type ConfirmSaleResult,
   type CurrentUserProfile,
   type DispenseStockInput,
   type OffsetMovementInput,
@@ -17,3 +21,4 @@ export {
   type StockMovementHistoryEntry,
   type StockMovementOperationResult,
 } from './stock-movement';
+

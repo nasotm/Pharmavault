@@ -115,6 +115,17 @@ export const PharmacyAiAssistantPanel: React.FC<PharmacyAiAssistantPanelProps> =
 
   const formatToolCallSignature = (tc: ExecutedToolCallRecord): string => {
     const args = tc.args ?? {};
+    if (tc.name === 'get_sales_summary') {
+      return `get_sales_summary(${JSON.stringify(String(args.start_date ?? 'today'))}, ${JSON.stringify(String(args.end_date ?? 'today'))})`;
+    }
+    if (tc.name === 'get_top_selling') {
+      const cat = args.category ? JSON.stringify(String(args.category)) : 'null';
+      const lim = String(args.limit ?? 5);
+      return `get_top_selling(${cat}, ${lim})`;
+    }
+    if (tc.name === 'get_expiring_value') {
+      return 'get_expiring_value()';
+    }
     if (tc.name === 'get_revenue') {
       return `get_revenue(${JSON.stringify(String(args.date ?? 'today'))})`;
     }
@@ -133,8 +144,8 @@ export const PharmacyAiAssistantPanel: React.FC<PharmacyAiAssistantPanelProps> =
     return tc.name;
   };
 
-  const renderFormattedAssistantText = (rawText: string): React.ReactNode => {
-    const tokens = rawText.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
+  const renderInlineTokens = (text: string): React.ReactNode => {
+    const tokens = text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g);
     return tokens.map((token, idx) => {
       if (token.startsWith('**') && token.endsWith('**') && token.length > 4) {
         return (
@@ -155,6 +166,52 @@ export const PharmacyAiAssistantPanel: React.FC<PharmacyAiAssistantPanelProps> =
       }
       return <React.Fragment key={idx}>{token}</React.Fragment>;
     });
+  };
+
+  const renderFormattedAssistantText = (rawText: string): React.ReactNode => {
+    const lines = rawText.split('\n');
+    const blocks: React.ReactNode[] = [];
+    let currentBulletItems: string[] = [];
+
+    const flushBulletList = (keyPrefix: string) => {
+      if (currentBulletItems.length === 0) return;
+      const itemsToRender = [...currentBulletItems];
+      currentBulletItems = [];
+      blocks.push(
+        <ul
+          key={`list-${keyPrefix}`}
+          className="list-disc pl-4 space-y-1 my-1 text-slate-700 dark:text-slate-200 marker:text-sky-500"
+        >
+          {itemsToRender.map((itemText, idx) => (
+            <li key={idx} className="leading-relaxed">
+              {renderInlineTokens(itemText)}
+            </li>
+          ))}
+        </ul>,
+      );
+    };
+
+    lines.forEach((line, index) => {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        flushBulletList(String(index));
+        return;
+      }
+      const bulletMatch = trimmed.match(/^(?:[-•*])\s+(.+)$/);
+      if (bulletMatch && bulletMatch[1]) {
+        currentBulletItems.push(bulletMatch[1]);
+      } else {
+        flushBulletList(String(index));
+        blocks.push(
+          <p key={`p-${index}`} className="leading-relaxed">
+            {renderInlineTokens(trimmed)}
+          </p>,
+        );
+      }
+    });
+
+    flushBulletList('end');
+    return <div className="space-y-1.5">{blocks}</div>;
   };
 
   const executePrompt = async (
@@ -338,6 +395,32 @@ export const PharmacyAiAssistantPanel: React.FC<PharmacyAiAssistantPanelProps> =
                 Suggested Questions
               </div>
               <div className="flex flex-wrap gap-1.5">
+                <button
+                  type="button"
+                  data-testid="ai-quick-sales-summary-today"
+                  onClick={() => void executePrompt("What is today's revenue?")}
+                  className="px-2.5 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800 hover:bg-sky-50 dark:hover:bg-sky-950/50 hover:text-sky-700 dark:hover:text-sky-300 hover:border-sky-200 border border-slate-200/90 dark:border-slate-700 rounded-lg transition-colors shadow-2xs"
+                >
+                  What is today&apos;s revenue?
+                </button>
+                <button
+                  type="button"
+                  data-testid="ai-quick-top-antibiotics"
+                  onClick={() => void executePrompt('What are my top 3 selling antibiotics?')}
+                  className="px-2.5 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800 hover:bg-sky-50 dark:hover:bg-sky-950/50 hover:text-sky-700 dark:hover:text-sky-300 hover:border-sky-200 border border-slate-200/90 dark:border-slate-700 rounded-lg transition-colors shadow-2xs"
+                >
+                  What are my top 3 selling antibiotics?
+                </button>
+                <button
+                  type="button"
+                  data-testid="ai-quick-expiring-value"
+                  onClick={() =>
+                    void executePrompt('How much money is at risk from expiring stock?')
+                  }
+                  className="px-2.5 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-800 hover:bg-sky-50 dark:hover:bg-sky-950/50 hover:text-sky-700 dark:hover:text-sky-300 hover:border-sky-200 border border-slate-200/90 dark:border-slate-700 rounded-lg transition-colors shadow-2xs"
+                >
+                  How much money is at risk from expiring stock?
+                </button>
                 <button
                   type="button"
                   data-testid="ai-quick-expiring"

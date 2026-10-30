@@ -335,6 +335,132 @@ export async function dispenseStock(
   });
 }
 
+export interface ConfirmSaleCartItem {
+  medicationId: number;
+  brandName?: string;
+  quantity: number;
+}
+
+export interface ConfirmSaleInput {
+  items: readonly ConfirmSaleCartItem[];
+  userId: string;
+  createdAt?: string;
+}
+
+export interface ConfirmSaleResult {
+  movements: StockMovement[];
+  updatedBatches: Batch[];
+  totalUnitsDeducted: number;
+}
+
+/**
+ * Confirms a multi-item calculator sale in a single atomic SQLite transaction:
+ * 1. Verifies sufficient stock across active batches for every item in the cart.
+ *    If any item has insufficient stock, throws "Not enough stock for <Name>. Available: <A>, Requested: <R>"
+ *    and rolls back the entire transaction completely.
+ * 2. Deducts each item's quantity from its batches using FEFO order (earliest expiry first).
+ * 3. Writes a negative `stock_movement` row with reason `'dispense:sale'` and the current user for each deduction.
+ */
+export async function confirmCalculatorSale(
+  db: DatabasePort,
+  input: ConfirmSaleInput,
+): Promise<ConfirmSaleResult> {
+  if (!Array.isArray(input.items) || input.items.length === 0) {
+    throw new Error('Cannot confirm sale: the cart is empty.');
+  }
+
+  const cleanUser = input.userId.trim();
+  if (!cleanUser) {
+    throw new Error('A current user (name or PIN) is required to confirm a sale.');
+  }
+
+  // Merge duplicate medication rows while preserving cart order
+  const mergedItems: Array<{ medicationId: number; brandName?: string; quantity: number }> = [];
+  for (const item of input.items) {
+    if (!Number.isInteger(item.quantity) || item.quantity <= 0) {
+      throw new RangeError(
+        `Sale item quantity must be a positive integer greater than 0 (received ${String(item.quantity)}).`,
+      );
+    }
+    const existing = mergedItems.find((m) => m.medicationId === item.medicationId);
+    if (existing) {
+      existing.quantity += item.quantity;
+    } else {
+      mergedItems.push({
+        medicationId: item.medicationId,
+        brandName: item.brandName,
+        quantity: item.quantity,
+      });
+    }
+  }
+
+  const nowIso = input.createdAt ?? new Date().toISOString();
+
+  return db.transaction(async (tx) => {
+    const movements: StockMovement[] = [];
+    const updatedBatches: Batch[] = [];
+    let totalUnitsDeducted = 0;
+
+    for (const item of mergedItems) {
+      const med = await getMedicationById(tx, item.medicationId);
+      const displayBrand = med?.brand_name || item.brandName || `Medication #${item.medicationId}`;
+
+      if (!med) {
+        throw new Error(
+          `Not enough stock for ${displayBrand}. Available: 0, Requested: ${item.quantity}`,
+        );
+      }
+
+      const batches = await listBatchesForMedication(tx, item.medicationId);
+      const availableBatches = sortBatchesFefo(batches).filter((b) => b.quantity > 0);
+      const totalAvailable = availableBatches.reduce((sum, b) => sum + b.quantity, 0);
+
+      if (totalAvailable < item.quantity) {
+        throw new Error(
+          `Not enough stock for ${displayBrand}. Available: ${totalAvailable}, Requested: ${item.quantity}`,
+        );
+      }
+
+      let remainingToDeduct = item.quantity;
+
+      for (const batch of availableBatches) {
+        if (remainingToDeduct <= 0) break;
+        const deductQty = Math.min(batch.quantity, remainingToDeduct);
+        if (deductQty <= 0) continue;
+
+        const nextBatchQty = batch.quantity - deductQty;
+        const updatedBatch = await updateBatchQuantity(tx, batch.id, nextBatchQty);
+        updatedBatches.push(updatedBatch);
+
+        const movement = await insertMovement(tx, {
+          medication_id: item.medicationId,
+          batch_id: updatedBatch.id,
+          delta: -deductQty,
+          reason: 'dispense:sale',
+          user_id: cleanUser,
+          created_at: nowIso,
+        });
+        movements.push(movement);
+
+        remainingToDeduct -= deductQty;
+        totalUnitsDeducted += deductQty;
+      }
+
+      if (remainingToDeduct > 0) {
+        throw new Error(
+          `Not enough stock for ${displayBrand}. Available: ${totalAvailable}, Requested: ${item.quantity}`,
+        );
+      }
+    }
+
+    return {
+      movements,
+      updatedBatches,
+      totalUnitsDeducted,
+    };
+  });
+}
+
 /**
  * Posts an offsetting stock movement with a mandatory reason to correct inventory
  * without ever editing or deleting existing stock_movement rows.

@@ -13,8 +13,11 @@ import { getFdaDrugLabel } from '../services/openFdaService';
 import { searchGlobalDrug, type RxNormSearchResult } from '../services/rxnormService';
 import { ManualMedicationModal, type ManualMedicationPrefill } from './ManualMedicationModal';
 import {
+  findGenericEquivalentsInStock,
   getMedicationDetailForSearch,
+  isEligibleForGenericSubstitution,
   searchMedications,
+  type GenericSubstitutionResult,
   type LayeredSearchResponse,
   type SearchMedicationDetail,
   type SearchResultItem,
@@ -75,8 +78,38 @@ export function PrimarySearchExperience({
 
   const [isManualModalOpen, setIsManualModalOpen] = useState<boolean>(false);
   const [manualModalPrefill, setManualModalPrefill] = useState<ManualMedicationPrefill | null>(null);
+  const [findingGenericMedId, setFindingGenericMedId] = useState<number | null>(null);
+  const [genericModalResult, setGenericModalResult] = useState<GenericSubstitutionResult | null>(
+    null,
+  );
   const rxnormSeqRef = useRef<number>(0);
   const bdpmSeqRef = useRef<number>(0);
+
+  const handleFindGenericFromSearch = async (item: SearchResultItem) => {
+    const { medication } = item;
+    setFindingGenericMedId(medication.id);
+    try {
+      const db = getRepositoryDatabase();
+      const result = await findGenericEquivalentsInStock(db, {
+        medicationId: medication.id,
+        brandName: medication.brand_name,
+        genericName: medication.generic_name,
+      });
+      setGenericModalResult(result);
+    } catch {
+      setGenericModalResult({
+        sourceMedicationId: medication.id,
+        sourceBrandName: medication.brand_name,
+        sourceGenericName: medication.generic_name ?? null,
+        resolvedGenericName: medication.generic_name ?? null,
+        inferredByAi: false,
+        equivalents: [],
+        summaryText: 'No generic equivalent in stock.',
+      });
+    } finally {
+      setFindingGenericMedId(null);
+    }
+  };
 
   // Rapid keystroke buffer for hardware USB/Bluetooth wedge barcode scanners
   const scannerBufferRef = useRef<{ chars: string; lastKeyTime: number }>({
@@ -1004,7 +1037,10 @@ export function PrimarySearchExperience({
           <div className="space-y-3.5" role="list" aria-label="Search Results">
             {searchResponse.results.map((item) => {
               const { medication } = item;
-              const isLowStock = item.totalStock <= medication.reorder_level;
+              const isLowStock = isEligibleForGenericSubstitution(
+                item.totalStock,
+                medication.reorder_level,
+              );
 
               return (
                 <button
@@ -1054,16 +1090,43 @@ export function PrimarySearchExperience({
                     {/* Right: Calming Stock Indicator & Price */}
                     <div className="flex sm:flex-row md:flex-col items-start md:items-end justify-between gap-2 shrink-0 pt-3 md:pt-0 border-t md:border-t-0 border-slate-100 dark:border-slate-800">
                       {isLowStock ? (
-                        <motion.div
-                          data-testid={`search-low-stock-badge-${medication.id}`}
-                          animate={LOW_STOCK_BADGE_PULSE_ANIMATE}
-                          transition={LOW_STOCK_BADGE_PULSE_TRANSITION}
-                          className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold bg-red-50 dark:bg-red-950/80 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800/60"
-                        >
-                          <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-                          <span className="font-mono tabular-nums">{item.totalStock} units</span>
-                          <span>Low Stock</span>
-                        </motion.div>
+                        <div className="flex flex-col items-start md:items-end gap-1.5">
+                          <motion.div
+                            data-testid={`search-low-stock-badge-${medication.id}`}
+                            animate={LOW_STOCK_BADGE_PULSE_ANIMATE}
+                            transition={LOW_STOCK_BADGE_PULSE_TRANSITION}
+                            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold bg-red-50 dark:bg-red-950/80 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800/60"
+                          >
+                            <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+                            <span className="font-mono tabular-nums">{item.totalStock} units</span>
+                            <span>Low Stock</span>
+                          </motion.div>
+
+                          <span
+                            role="button"
+                            tabIndex={0}
+                            data-testid={`search-find-generic-btn-${medication.id}`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void handleFindGenericFromSearch(item);
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                void handleFindGenericFromSearch(item);
+                              }
+                            }}
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-semibold text-sky-700 dark:text-sky-300 bg-sky-50 dark:bg-sky-950/80 hover:bg-sky-100 dark:hover:bg-sky-900/80 border border-sky-200 dark:border-sky-800 transition-colors cursor-pointer"
+                          >
+                            <Sparkles className="w-3 h-3 text-sky-600 dark:text-sky-400 shrink-0" />
+                            <span>
+                              {findingGenericMedId === medication.id
+                                ? 'Searching generics...'
+                                : 'Find Generic Equivalent'}
+                            </span>
+                          </span>
+                        </div>
                       ) : (
                         <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-50 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/60">
                           <span className="w-2 h-2 rounded-full bg-emerald-500" />
@@ -1096,6 +1159,92 @@ export function PrimarySearchExperience({
                 </button>
               );
             })}
+          </div>
+        </div>
+      )}
+
+      {/* Generic Substitution Modal (from Search Results List) */}
+      {genericModalResult && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Generic equivalents for ${genericModalResult.sourceBrandName}`}
+          data-testid="search-generic-substitution-modal"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 dark:bg-slate-950/70 backdrop-blur-xs"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setGenericModalResult(null);
+            }
+          }}
+        >
+          <div className="w-full max-w-lg rounded-3xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl p-6 space-y-4">
+            <div className="flex items-start justify-between gap-3 border-b border-slate-100 dark:border-slate-800 pb-3.5">
+              <div className="space-y-1">
+                <div className="inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-sky-700 dark:text-sky-300">
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>Generic Substitution</span>
+                </div>
+                <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                  Alternatives for {genericModalResult.sourceBrandName}
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400">
+                  Active molecule (DCI):{' '}
+                  <strong className="font-mono text-slate-800 dark:text-slate-200">
+                    {genericModalResult.resolvedGenericName ?? 'Unknown'}
+                  </strong>
+                  {genericModalResult.inferredByAi ? ' (inferred by AI Assistant)' : ''}
+                </p>
+              </div>
+              <button
+                type="button"
+                data-testid="close-generic-modal-btn"
+                onClick={() => setGenericModalResult(null)}
+                className="px-3 py-1.5 text-xs font-semibold text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg transition-colors cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+
+            {genericModalResult.equivalents.length === 0 ? (
+              <div
+                data-testid="search-generic-empty-message"
+                className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/70 border border-slate-200/80 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 text-center"
+              >
+                No generic equivalent in stock.
+              </div>
+            ) : (
+              <div className="space-y-2.5">
+                <div
+                  data-testid="search-generic-summary-heading"
+                  className="text-xs font-bold text-slate-900 dark:text-white"
+                >
+                  Generics available in stock:
+                </div>
+                <ul
+                  data-testid="search-generic-list"
+                  className="space-y-2 max-h-64 overflow-y-auto pr-1"
+                >
+                  {genericModalResult.equivalents.map((eq) => (
+                    <li
+                      key={eq.medicationId}
+                      data-testid={`search-generic-item-${eq.medicationId}`}
+                      className="p-3 rounded-xl bg-sky-50/70 dark:bg-slate-800/90 border border-sky-200/80 dark:border-sky-800/70 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 text-xs"
+                    >
+                      <span className="font-mono font-bold text-slate-900 dark:text-white">
+                        {eq.formattedLine}
+                      </span>
+                      <span className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">
+                        Available alternative
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            <div className="pt-1 text-[11px] text-slate-500 dark:text-slate-400 flex items-center justify-between">
+              <span>Read-only lookup · Medication and stock are not automatically modified.</span>
+            </div>
           </div>
         </div>
       )}

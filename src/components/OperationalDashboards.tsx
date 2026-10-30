@@ -1,17 +1,19 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Activity, AlertTriangle } from 'lucide-react';
+import { Activity, AlertTriangle, CheckCircle2, PackagePlus, Sparkles } from 'lucide-react';
 import {
   exportExpiringSoonToCsv,
   exportLowStockToCsv,
   queryExpiringSoonDashboard,
   queryLowStockDashboard,
   queryStockoutPredictions,
+  synthesizeStockoutPredictionInsight,
   triggerCsvDownload,
   type ExpiringSoonDashboardResult,
   type LowStockDashboardRow,
   type StockoutPredictionRow,
 } from '../dashboards';
+import { generateDailyBriefing } from '../assistant/assistant';
 import { getRepositoryDatabase } from '../db/repository';
 import {
   dispenseStock,
@@ -24,6 +26,20 @@ import {
   LOW_STOCK_BADGE_PULSE_TRANSITION,
 } from '../utils/animations';
 import { getExpiryVisualBadge } from '../utils/expiry';
+
+function renderFormattedBriefing(text: string): React.ReactNode {
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  return parts.map((part, idx) => {
+    if (part.startsWith('**') && part.endsWith('**')) {
+      return (
+        <strong key={idx} className="font-bold text-slate-900 dark:text-white">
+          {part.slice(2, -2)}
+        </strong>
+      );
+    }
+    return <React.Fragment key={idx}>{part}</React.Fragment>;
+  });
+}
 
 export interface OperationalDashboardsProps {
   refreshTrigger?: unknown;
@@ -49,6 +65,10 @@ export const OperationalDashboards: React.FC<OperationalDashboardsProps> = ({
     content: string;
   } | null>(null);
   const [isRecordingSample, setIsRecordingSample] = useState<number | null>(null);
+  const [stockoutFilter, setStockoutFilter] = useState<'critical' | 'all'>('critical');
+  const [stockoutInsight, setStockoutInsight] = useState<string>('');
+  const [dailyBriefing, setDailyBriefing] = useState<string>('');
+  const [isBriefingLoading, setIsBriefingLoading] = useState<boolean>(true);
 
   const loadDashboards = useCallback(async () => {
     setIsLoading(true);
@@ -63,6 +83,40 @@ export const OperationalDashboards: React.FC<OperationalDashboardsProps> = ({
       setLowStockRows(lowStock);
       setExpiringResult(expiringSoon);
       setStockoutPredictions(predictions);
+
+      const immediateInsight = synthesizeStockoutPredictionInsight(predictions);
+      setStockoutInsight(immediateInsight);
+
+      setIsBriefingLoading(true);
+      generateDailyBriefing(db, { useRemoteModelEndpoint: true })
+        .then((briefingRes) => {
+          setDailyBriefing(briefingRes.briefing);
+        })
+        .catch(() => {
+          setDailyBriefing('Not enough data for a briefing yet. Start dispensing to see insights.');
+        })
+        .finally(() => {
+          setIsBriefingLoading(false);
+        });
+
+      if (typeof fetch === 'function') {
+        void fetch('/api/ai/stockout-insight', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ medications: predictions }),
+        })
+          .then(async (res) => {
+            if (res.ok) {
+              const data = (await res.json()) as { insight?: string };
+              if (data.insight) {
+                setStockoutInsight(data.insight);
+              }
+            }
+          })
+          .catch(() => {
+            // Keep immediate deterministic insight
+          });
+      }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -129,9 +183,16 @@ export const OperationalDashboards: React.FC<OperationalDashboardsProps> = ({
     }
   };
 
-  const criticalPredictionsCount = stockoutPredictions.filter(
-    (row) => row.is_critical_prediction,
-  ).length;
+  const criticalStockouts = stockoutPredictions.filter(
+    (p) =>
+      p.has_sufficient_history &&
+      p.days_remaining !== null &&
+      p.days_remaining >= 0 &&
+      p.days_remaining < 7.0,
+  );
+  const criticalPredictionsCount = criticalStockouts.length;
+  const displayedStockouts =
+    stockoutFilter === 'critical' ? criticalStockouts : stockoutPredictions;
 
   return (
     <section
@@ -210,6 +271,44 @@ export const OperationalDashboards: React.FC<OperationalDashboardsProps> = ({
         </div>
       )}
 
+      {/* AI Daily Briefing Card */}
+      <div
+        data-testid="ai-daily-briefing-card"
+        className="bg-gradient-to-br from-indigo-900 via-slate-900 to-slate-900 text-white rounded-2xl p-6 shadow-md border border-indigo-500/20 space-y-4"
+      >
+        <div className="flex items-center justify-between gap-3 border-b border-indigo-500/20 pb-3">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-indigo-500/20 border border-indigo-400/30 flex items-center justify-center text-indigo-300 shrink-0">
+              <Sparkles className="w-5 h-5 text-indigo-300 animate-pulse" aria-hidden="true" />
+            </div>
+            <div>
+              <h2 className="text-lg font-bold tracking-tight text-white flex items-center gap-2">
+                AI Daily Briefing
+                <span className="px-2 py-0.5 text-[10px] uppercase font-bold tracking-wider bg-indigo-500/30 text-indigo-200 border border-indigo-400/30 rounded-md">
+                  Business Advisor
+                </span>
+              </h2>
+              <p className="text-xs text-indigo-200/70">
+                Proactive morning briefing based on real sales, stock, and expiring batches
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="p-4 rounded-xl bg-slate-950/60 border border-indigo-500/20 text-sm text-slate-200 leading-relaxed min-h-[70px] flex items-center">
+          {isBriefingLoading ? (
+            <div className="flex items-center gap-3 text-indigo-300 text-xs font-medium">
+              <div className="w-4 h-4 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
+              Generating morning briefing from database tools...
+            </div>
+          ) : (
+            <div data-testid="ai-daily-briefing-text" className="space-y-1">
+              {renderFormattedBriefing(dailyBriefing)}
+            </div>
+          )}
+        </div>
+      </div>
+
       {/* AI Stockout Prediction Card ("Predicted Stockouts") - Deterministic SQL & TypeScript Math */}
       <div
         data-testid="predicted-stockouts-card"
@@ -226,7 +325,7 @@ export const OperationalDashboards: React.FC<OperationalDashboardsProps> = ({
                   Predicted Stockouts
                 </h2>
                 <span className="px-2 py-0.5 text-[11px] font-semibold rounded-md bg-sky-50 dark:bg-sky-950/70 text-sky-700 dark:text-sky-300 border border-sky-200/70 dark:border-sky-800/60">
-                  AI Stockout Prediction
+                  AI Stockout Predictor
                 </span>
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
@@ -245,63 +344,282 @@ export const OperationalDashboards: React.FC<OperationalDashboardsProps> = ({
                 className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-semibold bg-red-50 dark:bg-red-950/80 text-red-800 dark:text-red-300 border border-red-200 dark:border-red-800/60 rounded-lg"
               >
                 <AlertTriangle className="w-3.5 h-3.5 text-red-600 dark:text-red-400" aria-hidden="true" />
-                {criticalPredictionsCount} Critical Prediction
-                {criticalPredictionsCount === 1 ? '' : 's'} (&lt; 7d)
+                {criticalPredictionsCount} Critical (0–7 Days)
               </motion.span>
             ) : (
               <span
                 data-testid="predicted-stockouts-status-badge"
-                className="px-3 py-1 text-xs font-semibold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 rounded-lg"
+                className="px-3 py-1 text-xs font-semibold bg-emerald-50 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/60 rounded-lg"
               >
-                0 Critical Predictions (&lt; 7d)
+                0 Critical Stockouts (0–7 Days)
               </span>
             )}
           </div>
+        </div>
+
+        {/* AI Stockout Prediction Text Insight */}
+        <div
+          data-testid="stockout-ai-insight-banner"
+          className="p-4 rounded-xl bg-gradient-to-r from-sky-500/10 via-indigo-500/10 to-violet-500/10 dark:from-sky-950/40 dark:via-indigo-950/40 dark:to-violet-950/40 border border-sky-200/80 dark:border-sky-800/60 flex items-start gap-3.5"
+        >
+          <div className="w-8 h-8 rounded-lg bg-sky-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+            <Sparkles className="w-4 h-4" aria-hidden="true" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-sky-700 dark:text-sky-300">
+                AI Stockout Insight
+              </span>
+              <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-white/80 dark:bg-slate-900/80 text-slate-600 dark:text-slate-300 border border-slate-200/80 dark:border-slate-700/80">
+                Pure SQL Math &middot; Grounded Insight
+              </span>
+            </div>
+            <p
+              data-testid="stockout-ai-insight-text"
+              className="text-xs sm:text-sm font-medium text-slate-800 dark:text-slate-100 mt-1 leading-relaxed"
+            >
+              {stockoutInsight || 'Analyzing 30-day dispensing patterns...'}
+            </p>
+          </div>
+        </div>
+
+        {/* Filter and Actions Bar */}
+        <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+          <div className="flex items-center gap-1.5 p-1 bg-slate-100 dark:bg-slate-800/80 rounded-xl border border-slate-200/70 dark:border-slate-700/70">
+            <button
+              type="button"
+              data-testid="stockout-filter-critical-btn"
+              onClick={() => setStockoutFilter('critical')}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${
+                stockoutFilter === 'critical'
+                  ? 'bg-white dark:bg-slate-900 text-red-700 dark:text-red-400 shadow-2xs font-bold'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              Critical Stockouts (0–7 Days)
+              <span className="ml-1.5 px-1.5 py-0.5 rounded-full text-[10px] bg-red-100 dark:bg-red-950 text-red-700 dark:text-red-300 font-mono">
+                {criticalStockouts.length}
+              </span>
+            </button>
+            <button
+              type="button"
+              data-testid="stockout-filter-all-btn"
+              onClick={() => setStockoutFilter('all')}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${
+                stockoutFilter === 'all'
+                  ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-2xs font-bold'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              All Tracked Medications ({stockoutPredictions.length})
+            </button>
+          </div>
+
+          {criticalStockouts.length === 0 && (
+            <button
+              type="button"
+              data-testid="simulate-ventolin-critical-btn"
+              disabled={isRecordingSample !== null}
+              onClick={() => void handleRecordUsageCycle(2)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/60 hover:bg-rose-100 dark:hover:bg-rose-900/60 border border-rose-200/80 dark:border-rose-800/60 rounded-xl transition-colors cursor-pointer"
+            >
+              <Activity className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>
+                {isRecordingSample === 2 ? 'Simulating 30d Usage...' : 'Simulate 30d Usage (Ventolin HFA)'}
+              </span>
+            </button>
+          )}
         </div>
 
         {isLoading ? (
           <div className="p-6 text-center text-xs text-slate-500 dark:text-slate-400">
             Calculating 30-day stockout predictions...
           </div>
-        ) : stockoutPredictions.length === 0 ? (
-          <div className="p-6 text-center text-sm text-slate-500 dark:text-slate-400">
-            No medications available for stockout prediction.
+        ) : displayedStockouts.length === 0 ? (
+          <div
+            data-testid="predicted-stockouts-empty-state"
+            className="p-8 text-center bg-slate-50/70 dark:bg-slate-800/40 rounded-xl border border-slate-200/60 dark:border-slate-800 space-y-3"
+          >
+            <div className="w-10 h-10 rounded-full bg-emerald-100 dark:bg-emerald-950 text-emerald-600 dark:text-emerald-400 flex items-center justify-center mx-auto">
+              <CheckCircle2 className="w-5 h-5" />
+            </div>
+            <div>
+              <p className="text-sm font-bold text-slate-800 dark:text-slate-200">
+                No Critical Stockouts (0–7 Days)
+              </p>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-md mx-auto">
+                All tracked dispensary medications currently maintain adequate inventory or have no immediate stockout risk.
+              </p>
+            </div>
+            <div className="pt-2 flex justify-center gap-2">
+              <button
+                type="button"
+                onClick={() => setStockoutFilter('all')}
+                className="px-3 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-300 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+              >
+                View All Tracked Medications ({stockoutPredictions.length})
+              </button>
+            </div>
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table
-              data-testid="predicted-stockouts-table"
-              className="w-full text-left border-collapse"
-            >
-              <thead>
-                <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-800/60 text-xs font-medium text-slate-500 dark:text-slate-400">
-                  <th className="py-3 px-4">Medication</th>
-                  <th className="py-3 px-4 text-right">Current Stock</th>
-                  <th className="py-3 px-4 text-right">30d Avg Daily Usage</th>
-                  <th className="py-3 px-4 text-right">Days Remaining</th>
-                  <th className="py-3 px-4">Prediction Flag</th>
-                  <th className="py-3 px-4 text-right">Action</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-sm">
-                {stockoutPredictions.map((pred) => {
-                  const daysDisplay =
-                    pred.days_remaining !== null
-                      ? `${pred.days_remaining.toFixed(1)} days`
-                      : '— (No 30d outflow)';
+          <>
+            {/* Desktop Table View (lg screens) */}
+            <div className="hidden lg:block overflow-x-auto">
+              <table
+                data-testid="predicted-stockouts-table"
+                className="w-full text-left border-collapse"
+              >
+                <thead>
+                  <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-800/60 text-xs font-medium text-slate-500 dark:text-slate-400">
+                    <th className="py-3 px-4">Medication</th>
+                    <th className="py-3 px-4 text-right">Current Stock</th>
+                    <th className="py-3 px-4 text-right">Avg Daily Usage</th>
+                    <th className="py-3 px-4 text-right">Days Remaining</th>
+                    <th className="py-3 px-4 text-right">Suggested Reorder Qty</th>
+                    <th className="py-3 px-4 text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-sm">
+                  {displayedStockouts.map((pred) => {
+                    const daysDisplay =
+                      pred.days_remaining !== null
+                        ? `${pred.days_remaining.toFixed(1)} days`
+                        : '— (No 30d outflow)';
 
-                  return (
-                    <tr
-                      key={pred.medication_id}
-                      data-testid={`predicted-stockout-row-${pred.medication_id}`}
-                      className={`transition-colors ${
-                        pred.is_critical_prediction
-                          ? 'bg-red-50/30 dark:bg-red-950/20 hover:bg-red-50/60 dark:hover:bg-red-950/40'
-                          : 'hover:bg-slate-50/80 dark:hover:bg-slate-800/50'
-                      }`}
-                    >
-                      <td className="py-3.5 px-4">
-                        <div className="font-bold text-slate-900 dark:text-white">
+                    return (
+                      <tr
+                        key={pred.medication_id}
+                        data-testid={`predicted-stockout-row-${pred.medication_id}`}
+                        className={`transition-colors ${
+                          pred.is_critical_prediction
+                            ? 'bg-red-50/30 dark:bg-red-950/20 hover:bg-red-50/60 dark:hover:bg-red-950/40'
+                            : 'hover:bg-slate-50/80 dark:hover:bg-slate-800/50'
+                        }`}
+                      >
+                        <td className="py-3.5 px-4">
+                          <div
+                            data-testid={`predicted-stockout-name-${pred.medication_id}`}
+                            className="font-bold text-slate-900 dark:text-white"
+                          >
+                            {pred.brand_name}{' '}
+                            <span className="font-normal text-xs text-slate-500 dark:text-slate-400">
+                              · {pred.strength ?? '—'}
+                            </span>
+                          </div>
+                          <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                            {pred.generic_name ?? 'Standard'} &middot;{' '}
+                            <span className="font-mono">{pred.location_label}</span>
+                          </div>
+                        </td>
+
+                        <td
+                          data-testid={`predicted-stockout-current-stock-${pred.medication_id}`}
+                          className="py-3.5 px-4 text-right font-mono tabular-nums font-bold text-slate-900 dark:text-white whitespace-nowrap"
+                        >
+                          {pred.current_stock} units
+                        </td>
+
+                        <td
+                          data-testid={`predicted-stockout-avg-usage-${pred.medication_id}`}
+                          className="py-3.5 px-4 text-right font-mono tabular-nums text-xs text-slate-600 dark:text-slate-300 whitespace-nowrap"
+                        >
+                          {pred.avg_daily_usage.toFixed(2)} / day
+                          <span className="block text-[10px] text-slate-400 dark:text-slate-500">
+                            ({pred.total_outflow_30d} units in 30d)
+                          </span>
+                        </td>
+
+                        <td
+                          data-testid={`predicted-stockout-days-remaining-${pred.medication_id}`}
+                          className="py-3.5 px-4 text-right whitespace-nowrap"
+                        >
+                          {pred.is_critical_prediction ? (
+                            <motion.span
+                              animate={LOW_STOCK_BADGE_PULSE_ANIMATE}
+                              transition={LOW_STOCK_BADGE_PULSE_TRANSITION}
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold font-mono tabular-nums bg-red-50 dark:bg-red-950/90 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800/70"
+                            >
+                              <span className="w-1.5 h-1.5 rounded-full bg-red-600 animate-pulse shrink-0" />
+                              {daysDisplay} (Critical)
+                            </motion.span>
+                          ) : (
+                            <span
+                              className={`font-mono tabular-nums font-semibold ${
+                                pred.has_sufficient_history
+                                  ? 'text-emerald-700 dark:text-emerald-400'
+                                  : 'text-slate-400 dark:text-slate-500 font-normal text-xs'
+                              }`}
+                            >
+                              {daysDisplay}
+                            </span>
+                          )}
+                        </td>
+
+                        <td
+                          data-testid={`predicted-stockout-suggested-reorder-${pred.medication_id}`}
+                          className="py-3.5 px-4 text-right font-mono tabular-nums whitespace-nowrap"
+                        >
+                          <span className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-bold text-sky-800 dark:text-sky-300 bg-sky-50 dark:bg-sky-950/80 border border-sky-200 dark:border-sky-800/80 rounded-lg">
+                            <PackagePlus className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400" />
+                            +{pred.suggested_reorder_qty} units
+                          </span>
+                        </td>
+
+                        <td className="py-3.5 px-4 text-right whitespace-nowrap">
+                          <div className="inline-flex items-center justify-end gap-2">
+                            {!pred.has_sufficient_history && (
+                              <button
+                                type="button"
+                                data-testid={`simulate-30d-usage-btn-${pred.medication_id}`}
+                                disabled={isRecordingSample === pred.medication_id}
+                                onClick={() => void handleRecordUsageCycle(pred.medication_id)}
+                                className="px-2.5 py-1 text-xs font-medium whitespace-nowrap text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg transition-colors disabled:opacity-50 cursor-pointer"
+                              >
+                                {isRecordingSample === pred.medication_id
+                                  ? 'Simulating...'
+                                  : 'Simulate 30d Usage'}
+                              </button>
+                            )}
+                            {onSelectMedication && (
+                              <button
+                                type="button"
+                                data-testid={`predicted-stockout-inspect-btn-${pred.medication_id}`}
+                                onClick={() => onSelectMedication(pred.medication_id)}
+                                className="px-3 py-1 text-xs font-semibold whitespace-nowrap text-sky-700 dark:text-sky-300 bg-sky-50 dark:bg-sky-950/60 hover:bg-sky-100 dark:hover:bg-sky-900/60 border border-sky-200/70 dark:border-sky-800/60 rounded-lg transition-colors cursor-pointer"
+                              >
+                                Details
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Mobile / Tablet Stacked Cards View (screens < lg) */}
+            <div className="block lg:hidden space-y-3">
+              {displayedStockouts.map((pred) => {
+                const daysDisplay =
+                  pred.days_remaining !== null
+                    ? `${pred.days_remaining.toFixed(1)} days`
+                    : '— (No 30d outflow)';
+
+                return (
+                  <div
+                    key={pred.medication_id}
+                    data-testid={`predicted-stockout-mobile-card-${pred.medication_id}`}
+                    className={`p-4 rounded-xl border transition-colors space-y-3 ${
+                      pred.is_critical_prediction
+                        ? 'bg-red-50/40 dark:bg-red-950/20 border-red-200 dark:border-red-900/60'
+                        : 'bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-800'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <div className="font-bold text-slate-900 dark:text-white text-sm">
                           {pred.brand_name}{' '}
                           <span className="font-normal text-xs text-slate-500 dark:text-slate-400">
                             · {pred.strength ?? '—'}
@@ -311,100 +629,89 @@ export const OperationalDashboards: React.FC<OperationalDashboardsProps> = ({
                           {pred.generic_name ?? 'Standard'} &middot;{' '}
                           <span className="font-mono">{pred.location_label}</span>
                         </div>
-                      </td>
+                      </div>
 
-                      <td
-                        data-testid={`predicted-stockout-current-stock-${pred.medication_id}`}
-                        className="py-3.5 px-4 text-right font-mono tabular-nums font-bold text-slate-900 dark:text-white whitespace-nowrap"
-                      >
-                        {pred.current_stock} units
-                      </td>
+                      {pred.is_critical_prediction && (
+                        <motion.span
+                          animate={LOW_STOCK_BADGE_PULSE_ANIMATE}
+                          transition={LOW_STOCK_BADGE_PULSE_TRANSITION}
+                          className="px-2 py-0.5 rounded-md text-[11px] font-bold bg-red-100 dark:bg-red-950 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800"
+                        >
+                          Critical
+                        </motion.span>
+                      )}
+                    </div>
 
-                      <td
-                        data-testid={`predicted-stockout-avg-usage-${pred.medication_id}`}
-                        className="py-3.5 px-4 text-right font-mono tabular-nums text-xs text-slate-600 dark:text-slate-300 whitespace-nowrap"
-                      >
-                        {pred.avg_daily_usage.toFixed(2)} / day
-                        <span className="block text-[10px] text-slate-400 dark:text-slate-500">
-                          ({pred.total_outflow_30d} units / 30d)
+                    <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-100 dark:border-slate-800/80 text-xs">
+                      <div className="p-2 bg-slate-50 dark:bg-slate-800/60 rounded-lg">
+                        <span className="text-[10px] text-slate-400 dark:text-slate-500 block uppercase font-medium">
+                          Current Stock
                         </span>
-                      </td>
+                        <span className="font-bold font-mono text-slate-900 dark:text-white">
+                          {pred.current_stock} units
+                        </span>
+                      </div>
 
-                      <td
-                        data-testid={`predicted-stockout-days-remaining-${pred.medication_id}`}
-                        className={`py-3.5 px-4 text-right font-mono tabular-nums font-bold whitespace-nowrap ${
-                          pred.is_critical_prediction
-                            ? 'text-red-700 dark:text-red-400'
-                            : pred.has_sufficient_history
-                              ? 'text-emerald-700 dark:text-emerald-400'
-                              : 'text-slate-400 dark:text-slate-500 font-normal text-xs'
-                        }`}
-                      >
-                        {daysDisplay}
-                      </td>
+                      <div className="p-2 bg-slate-50 dark:bg-slate-800/60 rounded-lg">
+                        <span className="text-[10px] text-slate-400 dark:text-slate-500 block uppercase font-medium">
+                          Avg Daily Usage
+                        </span>
+                        <span className="font-bold font-mono text-slate-900 dark:text-white">
+                          {pred.avg_daily_usage.toFixed(2)} / day
+                        </span>
+                      </div>
 
-                      <td className="py-3.5 px-4 whitespace-nowrap">
-                        {pred.is_critical_prediction ? (
-                          <motion.span
-                            data-testid={`critical-prediction-badge-${pred.medication_id}`}
-                            animate={LOW_STOCK_BADGE_PULSE_ANIMATE}
-                            transition={LOW_STOCK_BADGE_PULSE_TRANSITION}
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold whitespace-nowrap bg-red-50 dark:bg-red-950/90 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800/70"
-                          >
-                            <span className="w-1.5 h-1.5 rounded-full bg-red-600 animate-pulse shrink-0" />
-                            Critical Prediction
-                          </motion.span>
-                        ) : pred.has_sufficient_history ? (
-                          <span
-                            data-testid={`stable-prediction-badge-${pred.medication_id}`}
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold whitespace-nowrap bg-emerald-50 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/60"
-                          >
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" />
-                            Stable (&ge; 7d)
-                          </span>
-                        ) : (
-                          <span
-                            data-testid={`insufficient-history-badge-${pred.medication_id}`}
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium whitespace-nowrap bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-700"
-                          >
-                            Insufficient History
-                          </span>
-                        )}
-                      </td>
+                      <div className="p-2 bg-slate-50 dark:bg-slate-800/60 rounded-lg">
+                        <span className="text-[10px] text-slate-400 dark:text-slate-500 block uppercase font-medium">
+                          Days Remaining
+                        </span>
+                        <span
+                          className={`font-bold font-mono ${
+                            pred.is_critical_prediction
+                              ? 'text-red-700 dark:text-red-400'
+                              : 'text-slate-900 dark:text-white'
+                          }`}
+                        >
+                          {daysDisplay}
+                        </span>
+                      </div>
 
-                      <td className="py-3.5 px-4 text-right whitespace-nowrap">
-                        <div className="inline-flex items-center justify-end gap-2">
-                          {!pred.has_sufficient_history && (
-                            <button
-                              type="button"
-                              data-testid={`simulate-30d-usage-btn-${pred.medication_id}`}
-                              disabled={isRecordingSample === pred.medication_id}
-                              onClick={() => void handleRecordUsageCycle(pred.medication_id)}
-                              className="px-2.5 py-1 text-xs font-medium whitespace-nowrap text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-lg transition-colors disabled:opacity-50"
-                            >
-                              {isRecordingSample === pred.medication_id
-                                ? 'Simulating...'
-                                : 'Simulate 30d Usage'}
-                            </button>
-                          )}
-                          {onSelectMedication && (
-                            <button
-                              type="button"
-                              data-testid={`predicted-stockout-inspect-btn-${pred.medication_id}`}
-                              onClick={() => onSelectMedication(pred.medication_id)}
-                              className="px-3 py-1 text-xs font-semibold whitespace-nowrap text-sky-700 dark:text-sky-300 bg-sky-50 dark:bg-sky-950/60 hover:bg-sky-100 dark:hover:bg-sky-900/60 border border-sky-200/70 dark:border-sky-800/60 rounded-lg transition-colors"
-                            >
-                              Details
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+                      <div className="p-2 bg-sky-50/80 dark:bg-sky-950/60 rounded-lg border border-sky-100 dark:border-sky-900/50">
+                        <span className="text-[10px] text-sky-600 dark:text-sky-400 block uppercase font-medium">
+                          Suggested Reorder
+                        </span>
+                        <span className="font-bold font-mono text-sky-800 dark:text-sky-300">
+                          +{pred.suggested_reorder_qty} units
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-end gap-2 pt-1">
+                      {!pred.has_sufficient_history && (
+                        <button
+                          type="button"
+                          disabled={isRecordingSample === pred.medication_id}
+                          onClick={() => void handleRecordUsageCycle(pred.medication_id)}
+                          className="px-2.5 py-1 text-xs font-medium text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 rounded-lg cursor-pointer"
+                        >
+                          Simulate Usage
+                        </button>
+                      )}
+                      {onSelectMedication && (
+                        <button
+                          type="button"
+                          onClick={() => onSelectMedication(pred.medication_id)}
+                          className="px-3 py-1 text-xs font-semibold text-sky-700 dark:text-sky-300 bg-sky-50 dark:bg-sky-950/60 border border-sky-200 dark:border-sky-800 rounded-lg cursor-pointer"
+                        >
+                          Details
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </>
         )}
       </div>
 

@@ -22,8 +22,12 @@ import {
   NO_RECENT_SALES_TREND_MESSAGE,
   PHARMACY_ASSISTANT_SYSTEM_PROMPT,
   PHARMACY_ASSISTANT_VERBATIM_PROMPT,
+  PHARMACY_BUSINESS_ANALYST_PROMPT,
   runAssistantTurn,
   verifyInsightNumbersGroundedInSql,
+  type GetExpiringValueToolOutput,
+  type GetSalesSummaryToolOutput,
+  type GetTopSellingToolOutput,
   type ListLowStockToolOutput,
 } from './assistant';
 
@@ -34,7 +38,7 @@ async function createSeededTestDb() {
   return db;
 }
 
-test('Prompt 7 Deliverable 3: system prompt includes the exact verbatim instructions', () => {
+test('Prompt 7 Deliverable 3: system prompt includes the exact verbatim instructions and Data Analyst prompt', () => {
   const expectedVerbatim = `You are a pharmacy inventory assistant. You are read-only.
 Never state a price, stock level, location, or expiry date unless it
 came from a tool result. If a tool returns null for a price, say the
@@ -43,8 +47,13 @@ Never populate, correct, or infer any catalog field: brand_name,
 generic_name, strength, dosage_form, atc_code, manufacturer, barcode.
 Never perform arithmetic yourself — always call calc_price.`;
 
+  const expectedAnalystPrompt =
+    'You are a pharmacy business analyst. You have access to sales, stock, and pricing data. Always use the provided tools to answer questions. Do not guess numbers. Format currency in DA.';
+
   assert.equal(PHARMACY_ASSISTANT_VERBATIM_PROMPT, expectedVerbatim);
+  assert.equal(PHARMACY_BUSINESS_ANALYST_PROMPT, expectedAnalystPrompt);
   assert.ok(PHARMACY_ASSISTANT_SYSTEM_PROMPT.includes(expectedVerbatim));
+  assert.ok(PHARMACY_ASSISTANT_SYSTEM_PROMPT.includes(expectedAnalystPrompt));
   assert.deepEqual(Array.from(ALLOWED_READ_ONLY_TOOLS), [
     'search_medication',
     'get_stock',
@@ -53,6 +62,9 @@ Never perform arithmetic yourself — always call calc_price.`;
     'calc_price',
     'get_revenue',
     'find_by_symptom_or_category',
+    'get_sales_summary',
+    'get_top_selling',
+    'get_expiring_value',
   ]);
 });
 
@@ -226,8 +238,8 @@ test('Deliverable 1 & 2: Location, stock, expiring, and calc_price questions map
     assert.equal(expTurn.toolCalls[0]?.name, 'list_expiring');
     assert.ok(expTurn.responseText.includes('VEN-2026-02'));
 
-    // 3. "how much for 3 boxes of this with 10% off" (context: Amoxil #1 @ $12.50 = 1250 cents)
-    // 3 * 1250 = 3750 cents; 10% off = 3375 cents ($33.75)
+    // 3. "how much for 3 boxes of this with 10% off" (context: Amoxil #1 @ 1,250 DA = 1250 units)
+    // 3 * 1250 = 3750; 10% off = 3375 (3,375 DA)
     const calcTurn = await runAssistantTurn(
       db,
       'how much for 3 boxes of this with 10% off',
@@ -238,7 +250,7 @@ test('Deliverable 1 & 2: Location, stock, expiring, and calc_price questions map
     );
     assert.equal(calcTurn.status, 'ok');
     assert.equal(calcTurn.toolCalls[0]?.name, 'calc_price');
-    assert.ok(calcTurn.responseText.includes('$33.75'));
+    assert.ok(calcTurn.responseText.includes('3,375 DA'));
 
     // 4. Rate limiter + local request logs
     const logs = getAssistantRequestLogs();
@@ -431,7 +443,7 @@ test('Expanded Ask Assistant Toolset: get_revenue(date), list_expiring(days), an
     const repo = createRepository(db);
     const targetDate = '2026-10-26';
 
-    // 1. Before any dispenses on 2026-10-26, "How much did we sell today?" calls get_revenue and returns $0.00
+    // 1. Before any dispenses on 2026-10-26, "How much did we sell today?" calls get_revenue and returns 0 DA
     const zeroRevTurn = await runAssistantTurn(db, 'How much did we sell today?', {
       referenceDate: targetDate,
     });
@@ -439,14 +451,14 @@ test('Expanded Ask Assistant Toolset: get_revenue(date), list_expiring(days), an
     assert.equal(zeroRevTurn.toolCalls.length, 1);
     assert.equal(zeroRevTurn.toolCalls[0]?.name, 'get_revenue');
     assert.equal(zeroRevTurn.toolCalls[0]?.args.date, targetDate);
-    assert.ok(zeroRevTurn.responseText.includes('$0.00'));
+    assert.ok(zeroRevTurn.responseText.includes('0 DA'));
     assert.ok(zeroRevTurn.responseText.includes('0 units'));
 
     // 2. Record dispenses on 2026-10-26:
-    // - 2 packs of Amoxil (#1 @ $12.50 = 1250 cents) -> 2500 cents ($25.00)
-    // - 3 packs of Doliprane (#5 @ $3.50 = 350 cents) -> 1050 cents ($10.50)
+    // - 2 packs of Amoxil (#1 @ 1,250 DA = 1250) -> 2,500 DA
+    // - 3 packs of Doliprane (#5 @ 350 DA = 350) -> 1,050 DA
     // - 1 pack of Lantus SoloStar (#3 @ NULL price) -> price not entered (never coerced to 0)
-    // Total priced revenue = 3550 cents ($35.50), total units sold = 6 across 3 transactions
+    // Total priced revenue = 3,550 DA, total units sold = 6 across 3 transactions
     await repo.insertMovement({
       medication_id: 1,
       batch_id: 1,
@@ -477,11 +489,11 @@ test('Expanded Ask Assistant Toolset: get_revenue(date), list_expiring(days), an
     });
     assert.equal(revTurn.status, 'ok');
     assert.equal(revTurn.toolCalls[0]?.name, 'get_revenue');
-    assert.ok(revTurn.responseText.includes('$35.50'));
+    assert.ok(revTurn.responseText.includes('3,550 DA'));
     assert.ok(revTurn.responseText.includes('Amoxil'));
-    assert.ok(revTurn.responseText.includes('$25.00'));
+    assert.ok(revTurn.responseText.includes('2,500 DA'));
     assert.ok(revTurn.responseText.includes('Doliprane'));
-    assert.ok(revTurn.responseText.includes('$10.50'));
+    assert.ok(revTurn.responseText.includes('1,050 DA'));
     assert.ok(revTurn.responseText.includes('Lantus SoloStar'));
     assert.ok(revTurn.responseText.toLowerCase().includes('price not entered'));
 
@@ -523,5 +535,88 @@ test('Expanded Ask Assistant Toolset: get_revenue(date), list_expiring(days), an
     await db.close();
   }
 });
+
+test('Pharmacy Business Analyst Tools: get_sales_summary, get_top_selling, and get_expiring_value', async () => {
+  const db = await createSeededTestDb();
+  try {
+    const repo = createRepository(db);
+    const targetDate = '2026-10-30';
+    const analystLimiter = new AssistantRateLimiter(50, 60_000);
+
+    // Record dispense movements on 2026-10-30:
+    // - Amoxil (#1, Antibiotic, unit_price 1,250 DA): -4 units -> 5,000 DA
+    // - Doliprane (#5, Analgesic, unit_price 350 DA): -6 units -> 2,100 DA
+    await repo.insertMovement({
+      medication_id: 1,
+      batch_id: 1,
+      delta: -4,
+      reason: 'dispense',
+      user_id: 'pharmacist:claire.dupont',
+      created_at: '2026-10-30T09:00:00.000Z',
+    });
+    await repo.insertMovement({
+      medication_id: 5,
+      batch_id: 6,
+      delta: -6,
+      reason: 'dispense',
+      user_id: 'pharmacist:claire.dupont',
+      created_at: '2026-10-30T10:30:00.000Z',
+    });
+
+    // 1. Quick query: "What is today's revenue?" -> calls get_sales_summary(start_date, end_date)
+    const salesTurn = await runAssistantTurn(db, "What is today's revenue?", {
+      referenceDate: targetDate,
+      rateLimiter: analystLimiter,
+    });
+    assert.equal(salesTurn.status, 'ok');
+    assert.equal(salesTurn.toolCalls[0]?.name, 'get_sales_summary');
+    const salesOutput = salesTurn.toolCalls[0]?.result as GetSalesSummaryToolOutput;
+    assert.equal(salesOutput.total_revenue_cents, 7100);
+    assert.equal(salesOutput.total_revenue_display, '7,100 DA');
+    assert.equal(salesOutput.total_items_sold, 10);
+    assert.ok(salesTurn.responseText.includes('**7,100 DA**'));
+    assert.ok(salesTurn.responseText.includes('**10 items**'));
+
+    // 2. Quick query: "What are my top 3 selling antibiotics?" -> calls get_top_selling(category, limit=3)
+    const topAntibioticsTurn = await runAssistantTurn(
+      db,
+      'What are my top 3 selling antibiotics?',
+      { referenceDate: targetDate, rateLimiter: analystLimiter },
+    );
+    assert.equal(topAntibioticsTurn.status, 'ok');
+    assert.equal(topAntibioticsTurn.toolCalls[0]?.name, 'get_top_selling');
+    const topOutput = topAntibioticsTurn.toolCalls[0]?.result as GetTopSellingToolOutput;
+    assert.equal(topOutput.limit, 3);
+    assert.ok(topOutput.items.length >= 1);
+    assert.equal(topOutput.items[0]?.brand_name, 'Amoxil');
+    assert.equal(topOutput.items[0]?.units_sold, 4);
+    assert.equal(topOutput.items[0]?.line_revenue_display, '5,000 DA');
+    assert.ok(topAntibioticsTurn.responseText.includes('**#1 Amoxil**'));
+    assert.ok(topAntibioticsTurn.responseText.includes('**4 units sold**'));
+    assert.ok(topAntibioticsTurn.responseText.includes('**5,000 DA**'));
+
+    // 3. Quick query: "How much money is at risk from expiring stock?" -> calls get_expiring_value()
+    // In seed.ts, Ventolin HFA batch VEN-2026-02 has 6 units expiring 2026-11-24 (25 days from 2026-10-30), cost_price_cents = 1950 (1,950 DA).
+    // 6 * 1,950 DA = 11,700 DA.
+    const expiringValueTurn = await runAssistantTurn(
+      db,
+      'How much money is at risk from expiring stock?',
+      { referenceDate: targetDate, rateLimiter: analystLimiter },
+    );
+    assert.equal(expiringValueTurn.status, 'ok');
+    assert.equal(expiringValueTurn.toolCalls[0]?.name, 'get_expiring_value');
+    const expValOutput = expiringValueTurn.toolCalls[0]?.result as GetExpiringValueToolOutput;
+    assert.equal(expValOutput.total_value_cents, 11700);
+    assert.equal(expValOutput.total_value_display, '11,700 DA');
+    assert.equal(expValOutput.total_units_expiring, 6);
+    assert.equal(expValOutput.batch_count, 1);
+    assert.ok(expiringValueTurn.responseText.includes('**11,700 DA**'));
+    assert.ok(expiringValueTurn.responseText.includes('**Ventolin HFA**'));
+    assert.ok(expiringValueTurn.responseText.includes('VEN-2026-02'));
+  } finally {
+    await db.close();
+  }
+});
+
 
 

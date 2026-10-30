@@ -15,9 +15,11 @@ import {
   AssistantRateLimitError,
   clearAssistantRequestLogs,
   executeGuardedToolCall,
+  generateDailyBriefing,
   getGuardRejectionLogs,
   PHARMACY_ASSISTANT_SYSTEM_PROMPT,
   PHARMACY_ASSISTANT_VERBATIM_PROMPT,
+  querySalesTrend,
   runAssistantTurn,
   type ListLowStockToolOutput,
 } from './assistant';
@@ -49,6 +51,10 @@ Never perform arithmetic yourself — always call calc_price.`;
       'calc_price',
       'get_revenue',
       'find_by_symptom_or_category',
+      'get_sales_summary',
+      'get_top_selling',
+      'get_expiring_value',
+      'get_sales_trend',
     ]);
   });
 
@@ -186,6 +192,22 @@ Never perform arithmetic yourself — always call calc_price.`;
       await expect(
         runAssistantTurn(db, "what's running low?", { simulateOffline: true }),
       ).rejects.toThrow(AssistantModelUnreachableError);
+    } finally {
+      await db.close();
+    }
+  });
+
+  it('supports querySalesTrend and generateDailyBriefing', async () => {
+    const db = await createSeededTestDb();
+    try {
+      const trend = await querySalesTrend(db, 1, 30, '2026-11-01');
+      expect(trend.medication_id).toBe(1);
+      expect(trend.brand_name).toBe('Amoxil');
+      expect(typeof trend.average_daily_sales).toBe('number');
+
+      const briefing = await generateDailyBriefing(db, { referenceDate: '2026-11-01' });
+      expect(briefing).toHaveProperty('briefing');
+      expect(briefing).toHaveProperty('hasData');
     } finally {
       await db.close();
     }

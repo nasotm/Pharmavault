@@ -20,6 +20,8 @@ export interface DetectedDrugInteraction {
 
 export interface DrugInteractionCheckResult {
   checkedCount: number;
+  has_interaction: boolean;
+  warning_message: string;
   hasMajorInteraction: boolean;
   interactions: DetectedDrugInteraction[];
   primaryWarningBanner: string | null;
@@ -27,17 +29,27 @@ export interface DrugInteractionCheckResult {
   source: 'gemini-pharmacist' | 'deterministic-clinical-rules';
 }
 
-export const DRUG_INTERACTION_DISCLAIMER =
-  'This is an automated pharmacist warning only and is not medical advice. Please verify with official clinical references before dispensing.';
+export const AI_INTERACTION_DISCLAIMER = 'This is an AI-assisted warning, not medical advice.';
+export const DRUG_INTERACTION_DISCLAIMER = 'This is an AI-assisted warning, not medical advice.';
 
-export const DRUG_INTERACTION_SYSTEM_PROMPT = `You are a clinical pharmacist assistant reviewing a dispensing cart of 2 or more medications by their generic names and ATC codes.
-Check for common, severe or major drug-drug interactions (for example: Warfarin + Aspirin, MAOIs + SSRIs, Warfarin + Amoxicillin, Warfarin + Paracetamol/NSAIDs, Beta-blockers + Salbutamol).
-Only report genuine major or severe interactions.
-If a major interaction is found between Drug A and Drug B, identify Drug A and Drug B clearly.
-You must explicitly state that this is a warning and not medical advice.`;
+export const DRUG_INTERACTION_SYSTEM_PROMPT = `You are a pharmacist. Analyze this list of medications: [list]. Identify any major or severe drug-drug interactions. Return a JSON object: { has_interaction: boolean, warning_message: string }.
+If the local database doesn't have the generic names, infer them from the brand names.`;
 
 /**
- * Formats the exact required red alert banner string:
+ * Formats the user-specified prominent red alert banner string:
+ * "⚠️ Warning: Potential interaction detected. [AI warning message]. Please verify with the doctor."
+ */
+export function formatPotentialInteractionAlert(aiWarningMessage: string): string {
+  const trimmed = (aiWarningMessage || '').trim();
+  if (!trimmed) {
+    return '⚠️ Warning: Potential interaction detected. Please verify with the doctor.';
+  }
+  const clean = trimmed.endsWith('.') ? trimmed.slice(0, -1).trim() : trimmed;
+  return `⚠️ Warning: Potential interaction detected. ${clean}. Please verify with the doctor.`;
+}
+
+/**
+ * Formats the deterministic red alert banner string:
  * "Warning: Potential interaction between [Drug A] and [Drug B]. Please verify."
  */
 export function formatInteractionBannerMessage(drugA: string, drugB: string): string {
@@ -47,7 +59,7 @@ export function formatInteractionBannerMessage(drugA: string, drugB: string): st
 }
 
 /**
- * Ensures the disclaimer explicitly states that this is a warning and not medical advice.
+ * Ensures the disclaimer explicitly states that this is an AI-assisted warning and not medical advice.
  */
 export function ensureDisclaimerPresent(rawDisclaimer?: string | null): string {
   const trimmed = (rawDisclaimer ?? '').trim();
@@ -58,7 +70,7 @@ export function ensureDisclaimerPresent(rawDisclaimer?: string | null): string {
   ) {
     return trimmed;
   }
-  return DRUG_INTERACTION_DISCLAIMER;
+  return AI_INTERACTION_DISCLAIMER;
 }
 
 /**
@@ -196,10 +208,12 @@ export function evaluateDeterministicDrugInteractions(
   if (uniqueItems.length < 2) {
     return {
       checkedCount: uniqueItems.length,
+      has_interaction: false,
+      warning_message: '',
       hasMajorInteraction: false,
       interactions: [],
       primaryWarningBanner: null,
-      disclaimer: DRUG_INTERACTION_DISCLAIMER,
+      disclaimer: AI_INTERACTION_DISCLAIMER,
       source: 'deterministic-clinical-rules',
     };
   }
@@ -238,7 +252,7 @@ export function evaluateDeterministicDrugInteractions(
               severity: rule.severity,
               bannerMessage: formatInteractionBannerMessage(drugA, drugB),
               clinicalSummary: rule.clinicalSummary,
-              disclaimer: DRUG_INTERACTION_DISCLAIMER,
+              disclaimer: AI_INTERACTION_DISCLAIMER,
             });
           }
         }
@@ -246,12 +260,19 @@ export function evaluateDeterministicDrugInteractions(
     }
   }
 
+  const hasInteraction = interactions.length > 0;
+  const warningMessage = hasInteraction
+    ? interactions.map((it) => it.clinicalSummary).filter(Boolean).join(' ')
+    : '';
+
   return {
     checkedCount: uniqueItems.length,
-    hasMajorInteraction: interactions.length > 0,
+    has_interaction: hasInteraction,
+    warning_message: warningMessage,
+    hasMajorInteraction: hasInteraction,
     interactions,
     primaryWarningBanner: interactions[0]?.bannerMessage ?? null,
-    disclaimer: DRUG_INTERACTION_DISCLAIMER,
+    disclaimer: AI_INTERACTION_DISCLAIMER,
     source: 'deterministic-clinical-rules',
   };
 }
@@ -262,6 +283,8 @@ export function evaluateDeterministicDrugInteractions(
 export function normalizeAiInteractionResponse(
   items: readonly DrugInteractionInputItem[],
   rawAiPayload: {
+    has_interaction?: boolean;
+    warning_message?: string;
     hasMajorInteraction?: boolean;
     interactions?: Array<{
       drugA?: string;
@@ -277,44 +300,72 @@ export function normalizeAiInteractionResponse(
     return baseline;
   }
 
-  if (!rawAiPayload || !Array.isArray(rawAiPayload.interactions)) {
+  if (!rawAiPayload) {
     return baseline;
   }
 
   const disclaimer = ensureDisclaimerPresent(rawAiPayload.disclaimer);
+
+  const aiHasInteraction =
+    typeof rawAiPayload.has_interaction === 'boolean'
+      ? rawAiPayload.has_interaction
+      : typeof rawAiPayload.hasMajorInteraction === 'boolean'
+        ? rawAiPayload.hasMajorInteraction
+        : undefined;
+
+  const rawWarningMsg = (rawAiPayload.warning_message ?? '').trim();
+
   const merged: DetectedDrugInteraction[] = [...baseline.interactions];
   const existingKeys = new Set(
     merged.map((m) => [m.drugA.toLowerCase(), m.drugB.toLowerCase()].sort().join('::')),
   );
 
-  for (const candidate of rawAiPayload.interactions) {
-    const drugA = String(candidate.drugA ?? '').trim();
-    const drugB = String(candidate.drugB ?? '').trim();
-    if (!drugA || !drugB || drugA.toLowerCase() === drugB.toLowerCase()) {
-      continue;
+  if (Array.isArray(rawAiPayload.interactions)) {
+    for (const candidate of rawAiPayload.interactions) {
+      const drugA = String(candidate.drugA ?? '').trim();
+      const drugB = String(candidate.drugB ?? '').trim();
+      if (!drugA || !drugB || drugA.toLowerCase() === drugB.toLowerCase()) {
+        continue;
+      }
+      const pairKey = [drugA.toLowerCase(), drugB.toLowerCase()].sort().join('::');
+      if (existingKeys.has(pairKey)) {
+        continue;
+      }
+      existingKeys.add(pairKey);
+      merged.push({
+        drugA,
+        drugB,
+        atcA: null,
+        atcB: null,
+        severity: candidate.severity === 'severe' ? 'severe' : 'major',
+        bannerMessage: formatInteractionBannerMessage(drugA, drugB),
+        clinicalSummary:
+          String(candidate.clinicalSummary ?? '').trim() ||
+          'Potential clinically significant drug-drug interaction identified.',
+        disclaimer,
+      });
     }
-    const pairKey = [drugA.toLowerCase(), drugB.toLowerCase()].sort().join('::');
-    if (existingKeys.has(pairKey)) {
-      continue;
-    }
-    existingKeys.add(pairKey);
-    merged.push({
-      drugA,
-      drugB,
-      atcA: null,
-      atcB: null,
-      severity: candidate.severity === 'severe' ? 'severe' : 'major',
-      bannerMessage: formatInteractionBannerMessage(drugA, drugB),
-      clinicalSummary:
-        String(candidate.clinicalSummary ?? '').trim() ||
-        'Potential clinically significant drug-drug interaction identified.',
-      disclaimer,
-    });
+  }
+
+  const finalHasInteraction =
+    aiHasInteraction !== undefined
+      ? aiHasInteraction || merged.length > 0
+      : merged.length > 0;
+
+  let finalWarningMessage = rawWarningMsg;
+  if (!finalWarningMessage && merged.length > 0) {
+    finalWarningMessage =
+      merged.map((m) => m.clinicalSummary).filter(Boolean).join(' ') ||
+      `${merged[0].drugA} interacts with ${merged[0].drugB}.`;
+  } else if (!finalWarningMessage && baseline.warning_message) {
+    finalWarningMessage = baseline.warning_message;
   }
 
   return {
     checkedCount: baseline.checkedCount,
-    hasMajorInteraction: merged.length > 0,
+    has_interaction: finalHasInteraction,
+    warning_message: finalHasInteraction ? finalWarningMessage : '',
+    hasMajorInteraction: finalHasInteraction,
     interactions: merged,
     primaryWarningBanner: merged[0]?.bannerMessage ?? null,
     disclaimer,
@@ -359,6 +410,8 @@ export async function checkCartDrugInteractions(
 
       if (response.ok) {
         const data = (await response.json()) as Partial<DrugInteractionCheckResult> & {
+          has_interaction?: boolean;
+          warning_message?: string;
           interactions?: Array<{
             drugA?: string;
             drugB?: string;
@@ -366,7 +419,11 @@ export async function checkCartDrugInteractions(
             clinicalSummary?: string;
           }>;
         };
-        if (data && typeof data.hasMajorInteraction === 'boolean') {
+        if (
+          data &&
+          (typeof data.has_interaction === 'boolean' ||
+            typeof data.hasMajorInteraction === 'boolean')
+        ) {
           return normalizeAiInteractionResponse(items, data);
         }
       }

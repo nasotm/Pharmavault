@@ -16,7 +16,13 @@ import {
 } from '../db/repository';
 import { type CurrentUserProfile } from '../movements';
 import { formatMedicationPriceInDa } from '../pricing';
-import { getMedicationDetailForSearch, type SearchMedicationDetail } from '../search';
+import {
+  findGenericEquivalentsInStock,
+  getMedicationDetailForSearch,
+  isEligibleForGenericSubstitution,
+  type GenericSubstitutionResult,
+  type SearchMedicationDetail,
+} from '../search';
 import { ScanLeafletModal } from './ScanLeafletModal';
 import { type ScannedLeafletData } from '../services/scanLeafletService';
 import {
@@ -85,6 +91,10 @@ export const MedicationDetailSlideOver: React.FC<MedicationDetailSlideOverProps>
     message: string;
   } | null>(null);
 
+  // Generic Substitution state (read-only lookup)
+  const [isFindingGenerics, setIsFindingGenerics] = useState<boolean>(false);
+  const [genericSubResult, setGenericSubResult] = useState<GenericSubstitutionResult | null>(null);
+
   const loadDetail = useCallback(async (id: number) => {
     try {
       const db = getRepositoryDatabase();
@@ -101,12 +111,16 @@ export const MedicationDetailSlideOver: React.FC<MedicationDetailSlideOverProps>
       setLocationFeedback(null);
       setIsEditingMedicalInfo(false);
       setMedicalInfoFeedback(null);
+      setGenericSubResult(null);
+      setIsFindingGenerics(false);
       return;
     }
     setIsEditingLocation(false);
     setLocationFeedback(null);
     setIsEditingMedicalInfo(false);
     setMedicalInfoFeedback(null);
+    setGenericSubResult(null);
+    setIsFindingGenerics(false);
     if (initialDetail && initialDetail.medication.id === medicationId) {
       setDetail(initialDetail);
     }
@@ -125,7 +139,36 @@ export const MedicationDetailSlideOver: React.FC<MedicationDetailSlideOverProps>
 
   const isOpen = medicationId !== null && detail !== null;
   const medication = detail?.medication;
-  const isLowStock = detail && medication ? detail.totalStock <= medication.reorder_level : false;
+  const isLowStock =
+    detail && medication
+      ? isEligibleForGenericSubstitution(detail.totalStock, medication.reorder_level)
+      : false;
+
+  const handleFindGenericEquivalent = async () => {
+    if (!medication) return;
+    setIsFindingGenerics(true);
+    try {
+      const db = getRepositoryDatabase();
+      const result = await findGenericEquivalentsInStock(db, {
+        medicationId: medication.id,
+        brandName: medication.brand_name,
+        genericName: medication.generic_name,
+      });
+      setGenericSubResult(result);
+    } catch {
+      setGenericSubResult({
+        sourceMedicationId: medication.id,
+        sourceBrandName: medication.brand_name,
+        sourceGenericName: medication.generic_name ?? null,
+        resolvedGenericName: medication.generic_name ?? null,
+        inferredByAi: false,
+        equivalents: [],
+        summaryText: 'No generic equivalent in stock.',
+      });
+    } finally {
+      setIsFindingGenerics(false);
+    }
+  };
 
   const handleRefreshAfterMutation = async () => {
     if (!medication) return;
@@ -561,6 +604,22 @@ export const MedicationDetailSlideOver: React.FC<MedicationDetailSlideOverProps>
               <div className="text-xs text-slate-500 dark:text-slate-400 mt-1">
                 Reorder threshold: <span className="font-mono">{medication.reorder_level}</span> units
               </div>
+              {isLowStock && (
+                <div className="mt-3 pt-2.5 border-t border-slate-100 dark:border-slate-700/70">
+                  <button
+                    type="button"
+                    data-testid="detail-find-generic-btn"
+                    disabled={isFindingGenerics}
+                    onClick={() => void handleFindGenericEquivalent()}
+                    className="w-full inline-flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-sky-700 dark:text-sky-300 bg-sky-50 dark:bg-sky-950/70 hover:bg-sky-100 dark:hover:bg-sky-900/70 border border-sky-200 dark:border-sky-800 rounded-lg transition-colors cursor-pointer disabled:opacity-60"
+                  >
+                    <Sparkles className="w-3.5 h-3.5 text-sky-600 dark:text-sky-400 shrink-0" />
+                    <span>
+                      {isFindingGenerics ? 'Searching generics...' : 'Find Generic Equivalent'}
+                    </span>
+                  </button>
+                </div>
+              )}
             </div>
 
             <div className="p-4 bg-white dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700/80 rounded-xl shadow-2xs">
@@ -589,6 +648,76 @@ export const MedicationDetailSlideOver: React.FC<MedicationDetailSlideOverProps>
               </div>
             </div>
           </div>
+
+          {/* Generic Substitution Results Panel (Read-Only Alternative Display) */}
+          {genericSubResult && (
+            <div
+              role="region"
+              aria-label="Generic Substitution Alternatives"
+              data-testid="detail-generic-substitution-panel"
+              className="p-4 rounded-2xl bg-sky-50/80 dark:bg-slate-800/90 border border-sky-200 dark:border-sky-800/80 shadow-2xs space-y-2.5"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-sky-600 dark:text-sky-400 shrink-0" />
+                  <span className="text-xs font-bold uppercase tracking-wider text-sky-900 dark:text-sky-200">
+                    Generic Substitution Check
+                  </span>
+                  {genericSubResult.resolvedGenericName && (
+                    <span className="px-2 py-0.5 rounded-md text-[11px] font-mono font-semibold bg-white dark:bg-slate-900 text-sky-800 dark:text-sky-300 border border-sky-200/80 dark:border-sky-800">
+                      DCI: {genericSubResult.resolvedGenericName}
+                      {genericSubResult.inferredByAi ? ' (AI Inferred)' : ''}
+                    </span>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  data-testid="detail-generic-close-btn"
+                  onClick={() => setGenericSubResult(null)}
+                  className="text-xs font-semibold text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white cursor-pointer"
+                >
+                  Dismiss
+                </button>
+              </div>
+
+              {genericSubResult.equivalents.length === 0 ? (
+                <div
+                  data-testid="detail-generic-empty-message"
+                  className="p-3 rounded-xl bg-white/90 dark:bg-slate-900/80 border border-slate-200/80 dark:border-slate-700/80 text-xs font-semibold text-slate-700 dark:text-slate-200"
+                >
+                  No generic equivalent in stock.
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <div
+                    data-testid="detail-generic-summary-text"
+                    className="text-xs font-bold text-slate-900 dark:text-white"
+                  >
+                    Generics available in stock:
+                  </div>
+                  <ul
+                    data-testid="detail-generic-list"
+                    className="space-y-1.5"
+                  >
+                    {genericSubResult.equivalents.map((eq) => (
+                      <li
+                        key={eq.medicationId}
+                        data-testid={`detail-generic-item-${eq.medicationId}`}
+                        className="px-3.5 py-2.5 rounded-xl bg-white dark:bg-slate-900 border border-sky-200/80 dark:border-sky-800/70 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5 text-xs"
+                      >
+                        <div className="font-semibold text-slate-900 dark:text-white font-mono">
+                          {eq.formattedLine}
+                        </div>
+                        <span className="text-[11px] text-emerald-700 dark:text-emerald-300 font-semibold">
+                          Read-only alternative · Stock unchanged
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Collapsible Detailed Medical Information Section */}
           <div

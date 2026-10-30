@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type { Html5Qrcode } from 'html5-qrcode';
+import { queryDevicePermission } from '../utils/permissions';
 
 export interface BarcodeCameraModalProps {
   isOpen: boolean;
@@ -58,6 +59,18 @@ export const BarcodeCameraModal: React.FC<BarcodeCameraModalProps> = ({
 
     const startCamera = async () => {
       try {
+        // Pre-check permission state before requesting stream
+        const permissionState = await queryDevicePermission('camera');
+        if (!isMounted) return;
+
+        if (permissionState === 'denied') {
+          setIsInitializing(false);
+          setErrorMessage(
+            'Camera permission is blocked in your browser settings. To scan barcodes: click the site settings or lock icon in your browser address bar, set Camera to Allow, and reopen this scanner.',
+          );
+          return;
+        }
+
         const { Html5Qrcode, Html5QrcodeSupportedFormats } = await import('html5-qrcode');
         if (!isMounted) return;
 

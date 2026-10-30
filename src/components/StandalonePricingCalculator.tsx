@@ -5,14 +5,20 @@ import {
   type CurrencyRecord,
   type MedicationWithAliases,
 } from '../db/repository';
-import { formatCurrentUserIdentifier, type CurrentUserProfile } from '../movements';
 import {
+  confirmCalculatorSale,
+  formatCurrentUserIdentifier,
+  type CurrentUserProfile,
+} from '../movements';
+import {
+  AI_INTERACTION_DISCLAIMER,
   buildDispensaryInvoicePdf,
   CALCULATOR_INTERACTION_REFERENCE_MEDICATIONS,
   checkCartDrugInteractions,
   evaluateDeterministicDrugInteractions,
   evaluateStandaloneCalculator,
   formatMoneyDisplay,
+  formatPotentialInteractionAlert,
   isDzdCurrency,
   savePharmacistManualPrice,
   type CalculatorLineInput,
@@ -80,6 +86,11 @@ export const StandalonePricingCalculator: React.FC<StandalonePricingCalculatorPr
   const [patientNameInput, setPatientNameInput] = useState<string>('');
   const [isExportingPdf, setIsExportingPdf] = useState<boolean>(false);
   const [pdfExportNotice, setPdfExportNotice] = useState<string | null>(null);
+
+  const [isConfirmingSale, setIsConfirmingSale] = useState<boolean>(false);
+  const [isSaleConfirmed, setIsSaleConfirmed] = useState<boolean>(false);
+  const [saleErrorMessage, setSaleErrorMessage] = useState<string | null>(null);
+  const [saleSuccessToast, setSaleSuccessToast] = useState<string | null>(null);
 
   const [inlinePriceDrafts, setInlinePriceDrafts] = useState<Record<number, string>>({});
   const [inlineSavingMedId, setInlineSavingMedId] = useState<number | null>(null);
@@ -171,11 +182,34 @@ export const StandalonePricingCalculator: React.FC<StandalonePricingCalculatorPr
     [calculatorInputItems, discountInput, taxInput, selectedCurrency, activeCurrencies],
   );
 
+  const resetSaleConfirmationState = () => {
+    setIsSaleConfirmed(false);
+    setSaleErrorMessage(null);
+    setSaleSuccessToast(null);
+    setPdfExportNotice(null);
+  };
+
+  const handleNewSale = () => {
+    setBasket([]);
+    setDiscountInput('0');
+    setTaxInput('0');
+    setPatientNameInput('');
+    resetSaleConfirmationState();
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        window.localStorage.removeItem('pharmavault_prescription_cart_v1');
+      }
+    } catch {
+      // Ignore storage errors
+    }
+  };
+
   const handleAddMedicationToBasket = (e: React.FormEvent) => {
     e.preventDefault();
     const qty = Number(quantityToAdd.trim());
     if (!Number.isInteger(qty) || qty <= 0) return;
 
+    resetSaleConfirmationState();
     setBasket((prev) => {
       const existing = prev.find((item) => item.medicationId === medicationIdToAdd);
       if (existing) {
@@ -190,6 +224,7 @@ export const StandalonePricingCalculator: React.FC<StandalonePricingCalculatorPr
   };
 
   const handleUpdateLineQuantity = (medicationId: number, nextQty: number) => {
+    resetSaleConfirmationState();
     if (!Number.isInteger(nextQty) || nextQty <= 0) {
       setBasket((prev) => prev.filter((item) => item.medicationId !== medicationId));
       return;
@@ -202,6 +237,7 @@ export const StandalonePricingCalculator: React.FC<StandalonePricingCalculatorPr
   };
 
   const handleRemoveLine = (medicationId: number) => {
+    resetSaleConfirmationState();
     setBasket((prev) => prev.filter((item) => item.medicationId !== medicationId));
   };
 
@@ -232,27 +268,88 @@ export const StandalonePricingCalculator: React.FC<StandalonePricingCalculatorPr
     }
   };
 
+  const triggerPdfDownload = (
+    evalSnapshot = evaluation,
+    patientSnapshot = patientNameInput,
+  ): string | null => {
+    try {
+      const doc = buildDispensaryInvoicePdf({
+        evaluation: evalSnapshot,
+        currentUser,
+        patientName: patientSnapshot,
+      });
+      const filename = `pharmavault-invoice-${Date.now().toString().slice(-6)}.pdf`;
+      doc.save(filename);
+      return filename;
+    } catch {
+      return null;
+    }
+  };
+
   const handleExportPdfInvoice = () => {
-    if (!evaluation.canComputeGrandTotal || calculatorInputItems.length === 0) {
+    if (!isSaleConfirmed || !evaluation.canComputeGrandTotal || calculatorInputItems.length === 0) {
       return;
     }
     setIsExportingPdf(true);
     setPdfExportNotice(null);
     try {
-      const doc = buildDispensaryInvoicePdf({
-        evaluation,
-        currentUser,
-        patientName: patientNameInput,
-      });
-      const filename = `pharmavault-invoice-${Date.now().toString().slice(-6)}.pdf`;
-      doc.save(filename);
-      setPdfExportNotice(`Invoice exported successfully as ${filename}`);
-    } catch (err: unknown) {
-      setPdfExportNotice(
-        `Failed to generate PDF: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      const filename = triggerPdfDownload(evaluation, patientNameInput);
+      if (filename) {
+        setPdfExportNotice(`Invoice exported successfully as ${filename}`);
+      } else {
+        setPdfExportNotice('Failed to generate PDF invoice.');
+      }
     } finally {
       setIsExportingPdf(false);
+    }
+  };
+
+  const handleConfirmSaleAndDeductStock = async () => {
+    if (
+      !evaluation.canComputeGrandTotal ||
+      calculatorInputItems.length === 0 ||
+      isConfirmingSale ||
+      isSaleConfirmed
+    ) {
+      return;
+    }
+
+    setIsConfirmingSale(true);
+    setSaleErrorMessage(null);
+    setSaleSuccessToast(null);
+    setPdfExportNotice(null);
+
+    const cartItemsToDeduct = calculatorInputItems.map((item) => ({
+      medicationId: item.medicationId,
+      brandName: item.brandName,
+      quantity: item.quantity,
+    }));
+
+    try {
+      const db = getRepositoryDatabase();
+      const userId = formatCurrentUserIdentifier(currentUser);
+
+      await confirmCalculatorSale(db, {
+        items: cartItemsToDeduct,
+        userId,
+      });
+
+      // 1. Deduct stock & record transaction in database
+      // 2. Do NOT trigger PDF export automatically
+      // 3. Show green success toast
+      setSaleSuccessToast('Sale confirmed! Stock updated.');
+
+      // 4. Keep cart intact after sale so pharmacist can review
+      // 5. Enable Export PDF Invoice button
+      setIsSaleConfirmed(true);
+
+      // Refresh live database stock & dashboards in parent App
+      await onMedicationPriceUpdated();
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      setSaleErrorMessage(message);
+    } finally {
+      setIsConfirmingSale(false);
     }
   };
 
@@ -280,6 +377,7 @@ export const StandalonePricingCalculator: React.FC<StandalonePricingCalculatorPr
               setBasket([{ medicationId: 1, quantity: 3 }]);
               setDiscountInput('10');
               setTaxInput('5');
+              resetSaleConfirmationState();
               setInlineError(null);
               setInlineSuccess(null);
             }}
@@ -295,6 +393,7 @@ export const StandalonePricingCalculator: React.FC<StandalonePricingCalculatorPr
                 { medicationId: 9001, quantity: 1 },
                 { medicationId: 9002, quantity: 1 },
               ]);
+              resetSaleConfirmationState();
               setInlineError(null);
               setInlineSuccess(null);
             }}
@@ -308,6 +407,7 @@ export const StandalonePricingCalculator: React.FC<StandalonePricingCalculatorPr
             onClick={() => {
               const nullMed = medications.find((m) => m.unit_price_cents === null) ?? medications[2];
               if (!nullMed) return;
+              resetSaleConfirmationState();
               setBasket((prev) => {
                 if (prev.some((i) => i.medicationId === nullMed.id)) return prev;
                 return [...prev, { medicationId: nullMed.id, quantity: 1 }];
@@ -384,76 +484,85 @@ export const StandalonePricingCalculator: React.FC<StandalonePricingCalculatorPr
             </button>
           </form>
 
-          {/* AI Pharmacist Drug Interaction Red Alert Banner (above the cart) */}
-          {interactionCheckItems.length >= 2 && interactionResult.hasMajorInteraction && (
+          {/* Small "Checking interactions..." loading state while AI is thinking */}
+          {interactionCheckItems.length >= 2 && isCheckingInteractions && (
             <div
-              role="alert"
-              aria-live="assertive"
-              data-testid="calculator-drug-interaction-banner"
-              className="p-4 bg-red-50 border-2 border-red-300 rounded-xl shadow-2xs space-y-2.5"
+              data-testid="calculator-interaction-loading"
+              className="flex items-center gap-2 text-xs font-medium text-amber-800 bg-amber-50/90 border border-amber-200/90 px-3.5 py-2 rounded-xl shadow-2xs"
             >
-              <div className="flex items-start gap-3">
-                <div className="w-8 h-8 rounded-lg bg-red-600 text-white flex items-center justify-center shrink-0 mt-0.5">
-                  <svg
-                    className="w-4 h-4"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    strokeWidth={2.2}
-                    aria-hidden="true"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"
-                    />
-                  </svg>
-                </div>
-
-                <div className="flex-1 min-w-0 space-y-1.5">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="text-[11px] font-bold uppercase tracking-wider text-red-800">
-                      AI Pharmacist Interaction Alert
-                    </span>
-                    {isCheckingInteractions && (
-                      <span className="text-[11px] font-medium text-red-700">
-                        Verifying with AI Assistant...
-                      </span>
-                    )}
-                  </div>
-
-                  <div className="space-y-1.5">
-                    {interactionResult.interactions.map((interaction, idx) => (
-                      <div
-                        key={`${interaction.drugA}-${interaction.drugB}-${idx}`}
-                        data-testid={`calculator-interaction-item-${idx}`}
-                        className="space-y-0.5"
-                      >
-                        <p
-                          data-testid="calculator-interaction-warning-text"
-                          className="text-xs font-bold text-red-950"
-                        >
-                          {interaction.bannerMessage}
-                        </p>
-                        {interaction.clinicalSummary && (
-                          <p className="text-xs text-red-800 leading-relaxed">
-                            {interaction.clinicalSummary}
-                          </p>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-
-                  <p
-                    data-testid="calculator-interaction-disclaimer"
-                    className="pt-1.5 border-t border-red-200/80 text-[11px] font-medium text-red-900"
-                  >
-                    {interactionResult.disclaimer}
-                  </p>
-                </div>
-              </div>
+              <svg
+                className="w-3.5 h-3.5 animate-spin text-amber-600 shrink-0"
+                fill="none"
+                viewBox="0 0 24 24"
+              >
+                <circle
+                  className="opacity-25"
+                  cx="12"
+                  cy="12"
+                  r="10"
+                  stroke="currentColor"
+                  strokeWidth="4"
+                />
+                <path
+                  className="opacity-75"
+                  fill="currentColor"
+                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                />
+              </svg>
+              <span>Checking interactions...</span>
             </div>
           )}
+
+          {/* AI Pharmacist Drug Interaction Red Alert Banner (above the cart) */}
+          {interactionCheckItems.length >= 2 &&
+            (interactionResult.has_interaction || interactionResult.hasMajorInteraction) && (
+              <div
+                role="alert"
+                aria-live="assertive"
+                data-testid="calculator-drug-interaction-banner"
+                className="p-4 bg-red-50 border-2 border-red-500 rounded-xl shadow-xs space-y-2 text-red-950"
+              >
+                <div className="flex items-start gap-3">
+                  <div className="w-8 h-8 rounded-lg bg-red-600 text-white flex items-center justify-center shrink-0 mt-0.5">
+                    <svg
+                      className="w-4 h-4"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={2.2}
+                      aria-hidden="true"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z"
+                      />
+                    </svg>
+                  </div>
+
+                  <div className="flex-1 min-w-0 space-y-1">
+                    <p
+                      data-testid="calculator-interaction-warning-text"
+                      className="text-xs sm:text-sm font-bold text-red-900 leading-snug"
+                    >
+                      {formatPotentialInteractionAlert(
+                        interactionResult.warning_message ||
+                          interactionResult.interactions[0]?.clinicalSummary ||
+                          interactionResult.interactions[0]?.bannerMessage ||
+                          'A major drug-drug interaction was identified',
+                      )}
+                    </p>
+
+                    <p
+                      data-testid="calculator-interaction-disclaimer"
+                      className="text-[11px] font-medium text-red-700"
+                    >
+                      {AI_INTERACTION_DISCLAIMER}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
 
           {/* Selected Line Items Table */}
           <div className="border border-slate-200 rounded-xl overflow-hidden">
@@ -739,7 +848,16 @@ export const StandalonePricingCalculator: React.FC<StandalonePricingCalculatorPr
                     </span>
                   )}
                 </div>
-                {evaluation.canComputeGrandTotal ? (
+                {evaluation.lines.length === 0 ? (
+                  <div className="text-right space-y-1">
+                    <div
+                      data-testid="calc-grand-total-dzd"
+                      className="text-2xl font-bold text-slate-400"
+                    >
+                      0 DA
+                    </div>
+                  </div>
+                ) : evaluation.canComputeGrandTotal ? (
                   <div className="text-right space-y-1">
                     <div
                       data-testid="calc-grand-total-dzd"
@@ -776,7 +894,7 @@ export const StandalonePricingCalculator: React.FC<StandalonePricingCalculatorPr
                 )}
               </div>
 
-              {/* Patient Name field & Export PDF Invoice button */}
+              {/* Patient Name field, Confirm Sale & Deduct Stock button, and Export PDF button */}
               <div className="pt-2 border-t border-slate-200/80 space-y-2.5 font-sans">
                 <div>
                   <label
@@ -796,29 +914,148 @@ export const StandalonePricingCalculator: React.FC<StandalonePricingCalculatorPr
                   />
                 </div>
 
-                <button
-                  type="button"
-                  data-testid="export-pdf-invoice-btn"
-                  onClick={handleExportPdfInvoice}
-                  disabled={!evaluation.canComputeGrandTotal || calculatorInputItems.length === 0 || isExportingPdf}
-                  className="w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-semibold text-white bg-sky-600 hover:bg-sky-700 active:bg-sky-800 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl shadow-xs hover:shadow transition-all"
-                >
-                  <svg
-                    className="w-4 h-4 text-white"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                    stroke="currentColor"
-                    strokeWidth={2}
-                    aria-hidden="true"
+                {saleErrorMessage && (
+                  <div
+                    role="alert"
+                    data-testid="calculator-sale-error-alert"
+                    className="p-3 bg-red-50 border border-red-300 rounded-xl text-xs font-semibold text-red-900 flex items-start gap-2"
                   >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                    />
-                  </svg>
-                  <span>{isExportingPdf ? 'Generating PDF...' : 'Export PDF Invoice'}</span>
-                </button>
+                    <svg
+                      className="w-4 h-4 text-red-600 shrink-0 mt-0.5"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={2}
+                      aria-hidden="true"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z"
+                      />
+                    </svg>
+                    <span>{saleErrorMessage}</span>
+                  </div>
+                )}
+
+                {saleSuccessToast && (
+                  <div
+                    role="status"
+                    data-testid="calculator-sale-success-toast"
+                    className="p-3 bg-emerald-50 border border-emerald-300 rounded-xl text-xs font-semibold text-emerald-900 flex items-center gap-2"
+                  >
+                    <svg
+                      className="w-4 h-4 text-emerald-600 shrink-0"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={2.2}
+                      aria-hidden="true"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                      />
+                    </svg>
+                    <span>{saleSuccessToast}</span>
+                  </div>
+                )}
+
+                <div className="flex flex-col sm:flex-row items-stretch gap-2">
+                  <button
+                    type="button"
+                    data-testid="confirm-sale-deduct-stock-btn"
+                    onClick={() => void handleConfirmSaleAndDeductStock()}
+                    disabled={
+                      !evaluation.canComputeGrandTotal ||
+                      calculatorInputItems.length === 0 ||
+                      isConfirmingSale ||
+                      isSaleConfirmed
+                    }
+                    className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl shadow-xs hover:shadow transition-all cursor-pointer"
+                  >
+                    <svg
+                      className="w-4 h-4 text-white shrink-0"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={2.2}
+                      aria-hidden="true"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M5 13l4 4L19 7"
+                      />
+                    </svg>
+                    <span>
+                      {isConfirmingSale
+                        ? 'Confirming Sale...'
+                        : isSaleConfirmed
+                          ? '✓ Sale Confirmed'
+                          : 'Confirm Sale & Deduct Stock'}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    data-testid="export-pdf-invoice-btn"
+                    onClick={handleExportPdfInvoice}
+                    title={
+                      !isSaleConfirmed
+                        ? 'Confirm sale first to export PDF invoice'
+                        : 'Export PDF Invoice'
+                    }
+                    disabled={
+                      !isSaleConfirmed ||
+                      !evaluation.canComputeGrandTotal ||
+                      calculatorInputItems.length === 0 ||
+                      isExportingPdf
+                    }
+                    className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-100 active:bg-slate-200 border border-slate-200/90 disabled:opacity-40 disabled:cursor-not-allowed rounded-xl shadow-2xs transition-all cursor-pointer shrink-0"
+                  >
+                    <svg
+                      className="w-4 h-4 text-slate-600 shrink-0"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={2}
+                      aria-hidden="true"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
+                      />
+                    </svg>
+                    <span>{isExportingPdf ? 'Generating PDF...' : 'Export PDF'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    data-testid="calc-new-sale-btn"
+                    onClick={handleNewSale}
+                    title="Clear cart and start a new sale"
+                    className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 active:bg-slate-300 border border-slate-200/90 rounded-xl transition-all cursor-pointer shrink-0"
+                  >
+                    <svg
+                      className="w-4 h-4 text-slate-500 shrink-0"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={2}
+                      aria-hidden="true"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        d="M12 4.5v15m7.5-7.5h-15"
+                      />
+                    </svg>
+                    <span>New Sale</span>
+                  </button>
+                </div>
 
                 {pdfExportNotice && (
                   <div

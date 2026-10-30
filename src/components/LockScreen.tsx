@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Lock, Unlock, Delete, ShieldAlert } from 'lucide-react';
-import { verifyPin } from '../utils/pinLock';
+import { isPinLockEnabled, verifyPin } from '../utils/pinLock';
 
 interface LockScreenProps {
   isLocked: boolean;
@@ -155,7 +155,13 @@ export const LockScreen: React.FC<LockScreenProps> = ({ isLocked, onUnlockSucces
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isLocked, handleDigitPress, handleBackspace, handleUnlockButtonClick]);
 
-  if (!isLocked) {
+  useEffect(() => {
+    if (isLocked && !isPinLockEnabled()) {
+      onUnlockSuccess();
+    }
+  }, [isLocked, onUnlockSuccess]);
+
+  if (!isLocked || !isPinLockEnabled()) {
     return null;
   }
 

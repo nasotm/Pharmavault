@@ -787,10 +787,12 @@ export interface StockoutPredictionRow {
   days_remaining: number | null;
   /** True when negative stock movement history exists in the last 30 days */
   has_sufficient_history: boolean;
-  /** True when Days Remaining < 7 and has_sufficient_history is true */
+  /** True when Days Remaining is between 0 and 7 and has_sufficient_history is true */
   is_critical_prediction: boolean;
   /** Human-readable deterministic status label */
   prediction_label: 'Critical Prediction' | 'Stable' | 'Insufficient History';
+  /** Deterministic suggested reorder quantity to maintain 30-day stock buffer */
+  suggested_reorder_qty: number;
 }
 
 export interface StockoutPredictionQueryOptions {
@@ -811,29 +813,42 @@ export interface StockoutPredictionQueryOptions {
  * Never uses the LLM for any arithmetic.
  * - avgDailyUsage = totalOutflow30d / 30
  * - daysRemaining = currentStock / avgDailyUsage (when hasSufficientHistory)
- * - isCriticalPrediction = hasSufficientHistory && daysRemaining < 7
+ * - isCriticalPrediction = hasSufficientHistory && daysRemaining >= 0 && daysRemaining <= 7
+ * - suggestedReorderQty = Math.max(1, targetBuffer - safeStock)
  */
 export function calculateStockoutPredictionMetrics(input: {
   currentStock: number;
   totalOutflow30d: number;
   outflowMovementCount30d: number;
+  reorderLevel?: number;
 }): {
   avgDailyUsage: number;
   daysRemaining: number | null;
   hasSufficientHistory: boolean;
   isCriticalPrediction: boolean;
   predictionLabel: 'Critical Prediction' | 'Stable' | 'Insufficient History';
+  suggestedReorderQty: number;
 } {
   const safeStock = Math.max(0, Number(input.currentStock) || 0);
   const safeOutflow = Math.max(0, Number(input.totalOutflow30d) || 0);
   const safeCount = Math.max(0, Math.trunc(Number(input.outflowMovementCount30d) || 0));
+  const safeReorder = Math.max(0, Number(input.reorderLevel) || 0);
 
   const hasSufficientHistory = safeCount > 0 && safeOutflow > 0;
   const avgDailyUsage = safeOutflow / 30.0;
   const daysRemaining =
     hasSufficientHistory && avgDailyUsage > 0 ? safeStock / avgDailyUsage : null;
   const isCriticalPrediction =
-    hasSufficientHistory && daysRemaining !== null && daysRemaining < 7.0;
+    hasSufficientHistory && daysRemaining !== null && daysRemaining >= 0 && daysRemaining < 7.0;
+
+  let suggestedReorderQty: number;
+  if (hasSufficientHistory && avgDailyUsage > 0) {
+    const targetBuffer = Math.max(Math.ceil(safeReorder * 1.5), Math.ceil(avgDailyUsage * 30));
+    suggestedReorderQty = Math.max(1, targetBuffer - safeStock);
+  } else {
+    const targetBuffer = Math.max(10, safeReorder * 2);
+    suggestedReorderQty = Math.max(1, targetBuffer - safeStock);
+  }
 
   const predictionLabel: 'Critical Prediction' | 'Stable' | 'Insufficient History' =
     !hasSufficientHistory
@@ -848,7 +863,59 @@ export function calculateStockoutPredictionMetrics(input: {
     hasSufficientHistory,
     isCriticalPrediction,
     predictionLabel,
+    suggestedReorderQty,
   };
+}
+
+/**
+ * Synthesizes a deterministic natural-language stockout insight text
+ * using strictly the exact numbers from the 30-day stockout prediction model.
+ * (e.g., "Amoxil will run out in 4.0 days based on current sales speed (12 units in stock, 3.0/day). Suggested reorder: 84 units.")
+ */
+export function synthesizeStockoutPredictionInsight(
+  predictions: readonly StockoutPredictionRow[],
+): string {
+  const critical = predictions.filter(
+    (p) =>
+      p.has_sufficient_history &&
+      p.days_remaining !== null &&
+      p.days_remaining >= 0 &&
+      p.days_remaining <= 7.0,
+  );
+
+  if (critical.length === 0) {
+    const withHistory = predictions.filter(
+      (p) => p.has_sufficient_history && p.days_remaining !== null,
+    );
+    if (withHistory.length === 0) {
+      return 'No 30-day dispensing movements recorded yet. Dispense medications to activate AI stockout predictions.';
+    }
+    const lowest = withHistory.reduce((prev, curr) =>
+      (prev.days_remaining ?? 9999) < (curr.days_remaining ?? 9999) ? prev : curr,
+    );
+    return `All medications have healthy stock (> 7 days remaining). Nearest threshold: ${lowest.brand_name} with ${(lowest.days_remaining ?? 0).toFixed(1)} days remaining.`;
+  }
+
+  // Pick the most critical medication (lowest days_remaining)
+  const mostCritical = critical.reduce((prev, curr) =>
+    (prev.days_remaining ?? 9999) < (curr.days_remaining ?? 9999) ? prev : curr,
+  );
+
+  const daysRemainingVal = mostCritical.days_remaining ?? 0;
+  const daysText =
+    daysRemainingVal === 0
+      ? 'today'
+      : daysRemainingVal < 1
+        ? 'within 24 hours'
+        : `in ${daysRemainingVal.toFixed(1)} days`;
+
+  const leadInsight = `${mostCritical.brand_name} will run out ${daysText} based on current sales speed (${mostCritical.current_stock} units in stock, ${mostCritical.avg_daily_usage.toFixed(2)}/day). Suggested reorder: ${mostCritical.suggested_reorder_qty} units.`;
+
+  if (critical.length > 1) {
+    return `${leadInsight} (${critical.length} critical medications require urgent replenishment within 7 days).`;
+  }
+
+  return leadInsight;
 }
 
 /**
@@ -923,7 +990,7 @@ SELECT
   c.days_remaining,
   c.has_sufficient_history,
   CASE
-    WHEN c.has_sufficient_history = 1 AND c.days_remaining IS NOT NULL AND c.days_remaining < 7.0
+    WHEN c.has_sufficient_history = 1 AND c.days_remaining IS NOT NULL AND c.days_remaining >= 0.0 AND c.days_remaining < 7.0
       THEN 1
     ELSE 0
   END AS is_critical_prediction
@@ -980,6 +1047,7 @@ export async function queryStockoutPredictions(
       currentStock,
       totalOutflow30d,
       outflowMovementCount30d,
+      reorderLevel: Number(row.reorder_level),
     });
 
     return {
@@ -1009,6 +1077,7 @@ export async function queryStockoutPredictions(
       has_sufficient_history: metrics.hasSufficientHistory,
       is_critical_prediction: metrics.isCriticalPrediction,
       prediction_label: metrics.predictionLabel,
+      suggested_reorder_qty: metrics.suggestedReorderQty,
     };
   });
 

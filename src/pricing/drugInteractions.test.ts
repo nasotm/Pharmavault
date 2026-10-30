@@ -5,6 +5,7 @@ import {
   DRUG_INTERACTION_DISCLAIMER,
   evaluateDeterministicDrugInteractions,
   formatInteractionBannerMessage,
+  formatPotentialInteractionAlert,
   normalizeAiInteractionResponse,
 } from './drugInteractions';
 
@@ -133,4 +134,58 @@ test('Drug Interactions: checkCartDrugInteractions uses background API fetch whe
     'Warning: Potential interaction between Warfarin and Aspirin. Please verify.',
   );
   assert.match(res.disclaimer, /not medical advice/i);
+});
+
+test('Drug Interactions: formatPotentialInteractionAlert produces exact required banner text', () => {
+  const alert1 = formatPotentialInteractionAlert(
+    'Warfarin combined with Aspirin significantly elevates bleeding risk.',
+  );
+  assert.equal(
+    alert1,
+    '⚠️ Warning: Potential interaction detected. Warfarin combined with Aspirin significantly elevates bleeding risk. Please verify with the doctor.',
+  );
+
+  const alert2 = formatPotentialInteractionAlert(
+    'Warfarin combined with Aspirin significantly elevates bleeding risk',
+  );
+  assert.equal(
+    alert2,
+    '⚠️ Warning: Potential interaction detected. Warfarin combined with Aspirin significantly elevates bleeding risk. Please verify with the doctor.',
+  );
+});
+
+test('Drug Interactions: AI prompt JSON format { has_interaction, warning_message } normalized cleanly', () => {
+  const items = [
+    { genericName: 'Warfarin', brandName: 'Coumadin' },
+    { genericName: 'Aspirin', brandName: 'Aspirin Cardio' },
+  ];
+
+  const res = normalizeAiInteractionResponse(items, {
+    has_interaction: true,
+    warning_message: 'Concurrent use of Warfarin and Aspirin carries a severe hemorrhage risk.',
+  });
+
+  assert.equal(res.has_interaction, true);
+  assert.equal(res.hasMajorInteraction, true);
+  assert.equal(
+    res.warning_message,
+    'Concurrent use of Warfarin and Aspirin carries a severe hemorrhage risk.',
+  );
+  assert.equal(res.disclaimer, 'This is an AI-assisted warning, not medical advice.');
+});
+
+test('Drug Interactions: AI prompt JSON format with has_interaction false returns clean result', () => {
+  const items = [
+    { genericName: 'Amoxicillin', brandName: 'Amoxil' },
+    { genericName: 'Salbutamol', brandName: 'Ventolin' },
+  ];
+
+  const res = normalizeAiInteractionResponse(items, {
+    has_interaction: false,
+    warning_message: '',
+  });
+
+  assert.equal(res.has_interaction, false);
+  assert.equal(res.hasMajorInteraction, false);
+  assert.equal(res.warning_message, '');
 });

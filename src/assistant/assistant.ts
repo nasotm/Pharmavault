@@ -24,6 +24,12 @@ import {
 import { formatLocationString, searchMedications } from '../search/search';
 
 /**
+ * Business analyst system prompt required by specification.
+ */
+export const PHARMACY_BUSINESS_ANALYST_PROMPT =
+  'You are a pharmacy business analyst. You have access to sales, stock, and pricing data. Always use the provided tools to answer questions. Do not guess numbers. Format currency in DA.';
+
+/**
  * Deliverable 3: Verbatim system prompt required by specification.
  */
 export const PHARMACY_ASSISTANT_VERBATIM_PROMPT = `You are a pharmacy inventory assistant. You are read-only.
@@ -34,14 +40,20 @@ Never populate, correct, or infer any catalog field: brand_name,
 generic_name, strength, dosage_form, atc_code, manufacturer, barcode.
 Never perform arithmetic yourself — always call calc_price.`;
 
-export const PHARMACY_ASSISTANT_SYSTEM_PROMPT = `${PHARMACY_ASSISTANT_VERBATIM_PROMPT}
+export const PHARMACY_ASSISTANT_SYSTEM_PROMPT = `${PHARMACY_BUSINESS_ANALYST_PROMPT}
+
+${PHARMACY_ASSISTANT_VERBATIM_PROMPT}
 
 Additional operational rules:
-- You may only call the read-only tools: search_medication, get_stock, list_low_stock, list_expiring, calc_price, get_revenue, find_by_symptom_or_category.
+- You may only call the read-only tools: search_medication, get_stock, list_low_stock, list_expiring, calc_price, get_revenue, find_by_symptom_or_category, get_sales_summary, get_top_selling, get_expiring_value, get_sales_trend.
+- Use get_sales_trend(medication_id, days) to analyze stock_movement for a specific medication over the last N days and return average daily sales and projected days until stockout.
+- Use get_sales_summary(start_date, end_date) to calculate total revenue (in DA) and total items sold based on negative stock_movement deltas with reason 'dispense'.
+- Use get_top_selling(category, limit) to return the top N most dispensed medications, optionally filtered by therapeutic_class or category.
+- Use get_expiring_value() to calculate the total financial value (cost price * quantity) of all batches expiring in the next 30 days.
 - Use get_revenue(date) to calculate total sales revenue for a specific day (e.g. "today" or "YYYY-MM-DD").
 - Use list_expiring(days) to list medications expiring in N days (e.g. 30 or 31 for "this month").
 - Use find_by_symptom_or_category(category) to find medications by category or symptom (e.g. "Antibacterial").
-- Never invent data; only use tool results.
+- Never invent data; only use tool results. Format currency in DA.
 - Never call or attempt any write function (setPrice, insertMovement, insertMedication, updateMedicationFromImport, updateMedicationLocalInventory, etc.).
 - When a user asks to edit, fix, populate, correct, or infer any catalog field (brand_name, generic_name, strength, dosage_form, atc_code, manufacturer, barcode) or modify stock/prices, decline clearly and state that catalog, stock, and price fields are not editable in the read-only assistant.`;
 
@@ -52,7 +64,11 @@ export type AllowedReadOnlyToolName =
   | 'list_expiring'
   | 'calc_price'
   | 'get_revenue'
-  | 'find_by_symptom_or_category';
+  | 'find_by_symptom_or_category'
+  | 'get_sales_summary'
+  | 'get_top_selling'
+  | 'get_expiring_value'
+  | 'get_sales_trend';
 
 /**
  * Deliverable 2 & 4: Strict allow-list of read-only tools.
@@ -66,6 +82,10 @@ export const ALLOWED_READ_ONLY_TOOLS: ReadonlySet<string> = new Set<AllowedReadO
   'calc_price',
   'get_revenue',
   'find_by_symptom_or_category',
+  'get_sales_summary',
+  'get_top_selling',
+  'get_expiring_value',
+  'get_sales_trend',
 ]);
 
 /**
@@ -217,6 +237,112 @@ export interface FindBySymptomOrCategoryToolOutput {
   matched_terms: string[];
   count: number;
   medications: CategoryMedicationHit[];
+}
+
+export interface GetSalesSummaryToolOutput {
+  start_date: string;
+  end_date: string;
+  requested_start_date: string;
+  requested_end_date: string;
+  total_revenue_cents: number;
+  total_revenue_da: number;
+  total_revenue_display: string;
+  total_items_sold: number;
+  transaction_count: number;
+  currency: string;
+  has_unpriced_dispenses: boolean;
+  unpriced_medications: string[];
+  items: GetRevenueLineItem[];
+}
+
+export interface TopSellingMedicationItem {
+  rank: number;
+  medication_id: number;
+  brand_name: string;
+  generic_name: string | null;
+  strength: string | null;
+  dosage_form: string | null;
+  category: string | null;
+  therapeutic_class: string | null;
+  atc_code: string | null;
+  units_sold: number;
+  transaction_count: number;
+  unit_price_cents: number | null;
+  unit_price_display: string;
+  line_revenue_cents: number | null;
+  line_revenue_display: string;
+  current_stock: number;
+  location: string;
+}
+
+export interface GetTopSellingToolOutput {
+  category: string | null;
+  limit: number;
+  count: number;
+  total_units_sold: number;
+  total_revenue_da: number;
+  total_revenue_display: string;
+  items: TopSellingMedicationItem[];
+}
+
+export interface ExpiringBatchValueItem {
+  batch_id: number;
+  medication_id: number;
+  brand_name: string;
+  generic_name: string | null;
+  strength: string | null;
+  dosage_form: string | null;
+  lot_number: string | null;
+  quantity: number;
+  expiry_date: string;
+  days_remaining: number;
+  cost_price_cents: number | null;
+  cost_price_display: string;
+  batch_value_cents: number | null;
+  batch_value_display: string;
+  location: string;
+}
+
+export interface GetExpiringValueToolOutput {
+  days: number;
+  reference_date: string;
+  batch_count: number;
+  total_units_expiring: number;
+  total_value_cents: number;
+  total_value_da: number;
+  total_value_display: string;
+  currency: string;
+  has_missing_cost_price: boolean;
+  batches: ExpiringBatchValueItem[];
+}
+
+export interface GetSalesTrendToolOutput {
+  medication_id: number;
+  brand_name: string;
+  generic_name: string | null;
+  strength: string | null;
+  dosage_form: string | null;
+  days: number;
+  current_stock: number;
+  reorder_level: number;
+  total_sales_units: number;
+  transaction_count: number;
+  average_daily_sales: number;
+  projected_days_until_stockout: number | null;
+  stockout_risk_label: string;
+}
+
+export const MORNING_BRIEFING_PROMPT =
+  'Based on the current stock and recent sales (use the tools), give the pharmacist a 3-sentence morning briefing. Mention 1. The top-selling item, 2. The most critical stockout risk, and 3. A warning about any expiring batches.';
+
+export const NO_DATA_BRIEFING_MESSAGE =
+  'Not enough data for a briefing yet. Start dispensing to see insights.';
+
+export interface DailyBriefingResult {
+  briefing: string;
+  hasData: boolean;
+  isAiGenerated: boolean;
+  toolCalls: ExecutedToolCallRecord[];
 }
 
 export interface AssistantToolCallRequest {
@@ -736,6 +862,120 @@ export async function executeGuardedToolCall(
           timestamp,
         };
       }
+
+      case 'get_sales_summary': {
+        const requestedStart =
+          args.start_date !== undefined &&
+          args.start_date !== null &&
+          String(args.start_date).trim() !== ''
+            ? String(args.start_date).trim()
+            : 'today';
+        const requestedEnd =
+          args.end_date !== undefined &&
+          args.end_date !== null &&
+          String(args.end_date).trim() !== ''
+            ? String(args.end_date).trim()
+            : requestedStart;
+
+        const refAnchor = options.referenceDate ?? options.referenceTimestamp;
+        let resolvedStart = resolveRevenueTargetDate(requestedStart, refAnchor);
+        let resolvedEnd = resolveRevenueTargetDate(requestedEnd, refAnchor);
+        if (resolvedStart > resolvedEnd) {
+          const tmp = resolvedStart;
+          resolvedStart = resolvedEnd;
+          resolvedEnd = tmp;
+        }
+
+        const output = await querySalesSummary(
+          readOnlyDb,
+          resolvedStart,
+          resolvedEnd,
+          requestedStart,
+          requestedEnd,
+        );
+        return {
+          id,
+          name: rawName,
+          args: {
+            ...args,
+            start_date: resolvedStart,
+            end_date: resolvedEnd,
+          },
+          allowed: true,
+          status: 'executed',
+          result: output,
+          timestamp,
+        };
+      }
+
+      case 'get_top_selling': {
+        const rawCategory =
+          args.category !== undefined && args.category !== null
+            ? String(args.category).trim()
+            : '';
+        const rawLimit =
+          args.limit !== undefined && args.limit !== null ? Number(args.limit) : 3;
+        const limit =
+          Number.isInteger(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 50) : 3;
+        const output = await queryTopSellingMedications(readOnlyDb, {
+          category: rawCategory || null,
+          limit,
+        });
+        return {
+          id,
+          name: rawName,
+          args: {
+            ...args,
+            category: rawCategory || null,
+            limit,
+          },
+          allowed: true,
+          status: 'executed',
+          result: output,
+          timestamp,
+        };
+      }
+
+      case 'get_expiring_value': {
+        const rawDays =
+          args.days !== undefined && args.days !== null ? Number(args.days) : 30;
+        const days = Number.isInteger(rawDays) && rawDays > 0 ? rawDays : 30;
+        const output = await queryExpiringStockValue(readOnlyDb, {
+          withinDays: days,
+          referenceDate: options.referenceDate ?? options.referenceTimestamp?.slice(0, 10),
+        });
+        return {
+          id,
+          name: rawName,
+          args: { ...args },
+          allowed: true,
+          status: 'executed',
+          result: output,
+          timestamp,
+        };
+      }
+
+      case 'get_sales_trend': {
+        const rawMedId = Number(args.medication_id);
+        const medId = Number.isInteger(rawMedId) && rawMedId > 0 ? rawMedId : 1;
+        const rawDays = args.days !== undefined && args.days !== null ? Number(args.days) : 30;
+        const days = Number.isInteger(rawDays) && rawDays > 0 ? rawDays : 30;
+        const output = await querySalesTrend(
+          readOnlyDb,
+          medId,
+          days,
+          options.referenceTimestamp,
+        );
+        return {
+          id,
+          name: rawName,
+          args: { medication_id: medId, days },
+          allowed: true,
+          status: 'executed',
+          result: output,
+          timestamp,
+        };
+      }
     }
   } catch (err) {
     return {
@@ -772,6 +1012,16 @@ export function resolveRevenueTargetDate(
       return baseDate.toISOString().slice(0, 10);
     }
     return refIso;
+  }
+
+  const daysAgoMatch = raw.match(/^(?:last_?)?(\d+)_?days?$/);
+  if (daysAgoMatch) {
+    const days = Number(daysAgoMatch[1]);
+    const baseDate = new Date(`${refIso}T12:00:00.000Z`);
+    if (!Number.isNaN(baseDate.getTime()) && days > 0) {
+      baseDate.setUTCDate(baseDate.getUTCDate() - (days - 1));
+      return baseDate.toISOString().slice(0, 10);
+    }
   }
 
   const isoMatch = raw.match(/^(\d{4}-\d{2}-\d{2})/);
@@ -814,6 +1064,39 @@ ORDER BY
   m.brand_name ASC;
 `;
 
+const SALES_SUMMARY_RANGE_SQL = `
+SELECT
+  m.id AS medication_id,
+  m.brand_name,
+  m.generic_name,
+  m.strength,
+  m.dosage_form,
+  m.unit_price_cents,
+  m.currency,
+  COALESCE(SUM(-sm.delta), 0) AS units_sold,
+  COUNT(sm.id) AS transaction_count,
+  CASE
+    WHEN m.unit_price_cents IS NOT NULL
+      THEN COALESCE(SUM(-sm.delta), 0) * m.unit_price_cents
+    ELSE NULL
+  END AS line_revenue_cents
+FROM stock_movement sm
+INNER JOIN medication m ON m.id = sm.medication_id
+WHERE sm.delta < 0
+  AND (
+    LOWER(TRIM(COALESCE(sm.reason, ''))) = 'dispense'
+    OR LOWER(TRIM(COALESCE(sm.reason, ''))) LIKE 'dispense:%'
+    OR LOWER(TRIM(COALESCE(sm.reason, ''))) LIKE '%dispense%'
+  )
+  AND date(sm.created_at) >= date(?)
+  AND date(sm.created_at) <= date(?)
+GROUP BY m.id
+ORDER BY
+  COALESCE(line_revenue_cents, 0) DESC,
+  units_sold DESC,
+  m.brand_name ASC;
+`;
+
 interface RawDailyRevenueSqlRow {
   medication_id: number;
   brand_name: string;
@@ -843,13 +1126,13 @@ export async function queryDailyRevenue(
   let totalRevenueCents = 0;
   let totalUnitsSold = 0;
   let transactionCount = 0;
-  let currency = 'USD';
+  let currency = 'DZD';
   const unpricedMedications: string[] = [];
 
   const items: GetRevenueLineItem[] = rows.map((row) => {
     const unitsSold = Number(row.units_sold);
     const txCount = Number(row.transaction_count);
-    const rowCurrency = row.currency ? String(row.currency) : 'USD';
+    const rowCurrency = row.currency ? String(row.currency) : 'DZD';
     currency = rowCurrency;
 
     const unitPriceCents =
@@ -886,12 +1169,12 @@ export async function queryDailyRevenue(
       unit_price_display:
         unitPriceCents === null
           ? 'price not entered'
-          : formatMoneyDisplay(unitPriceCents, rowCurrency, { includeCentsSuffix: false }),
+          : formatMoneyDisplay(unitPriceCents, 'DZD', { includeCentsSuffix: false }),
       line_revenue_cents: lineRevenueCents,
       line_revenue_display:
         lineRevenueCents === null
           ? 'price not entered'
-          : formatMoneyDisplay(lineRevenueCents, rowCurrency, { includeCentsSuffix: false }),
+          : formatMoneyDisplay(lineRevenueCents, 'DZD', { includeCentsSuffix: false }),
       currency: rowCurrency,
     };
   });
@@ -900,7 +1183,7 @@ export async function queryDailyRevenue(
     date: resolvedDate,
     requested_date: requestedDate,
     total_revenue_cents: totalRevenueCents,
-    total_revenue_display: formatMoneyDisplay(totalRevenueCents, currency, {
+    total_revenue_display: formatMoneyDisplay(totalRevenueCents, 'DZD', {
       includeCentsSuffix: false,
     }),
     total_units_sold: totalUnitsSold,
@@ -911,6 +1194,631 @@ export async function queryDailyRevenue(
     items,
   };
 }
+
+/**
+ * Deterministic SQL query for `get_sales_summary(start_date, end_date)`:
+ * Returns total revenue (in DA) and total items sold based on negative `stock_movement`
+ * deltas with reason 'dispense' across the inclusive date range [start_date, end_date].
+ */
+export async function querySalesSummary(
+  db: DatabasePort,
+  startDate: string,
+  endDate: string,
+  requestedStartDate = startDate,
+  requestedEndDate = endDate,
+): Promise<GetSalesSummaryToolOutput> {
+  const rows = await db.query<RawDailyRevenueSqlRow>(SALES_SUMMARY_RANGE_SQL, [
+    startDate,
+    endDate,
+  ]);
+
+  let totalRevenueCents = 0;
+  let totalItemsSold = 0;
+  let transactionCount = 0;
+  const unpricedMedications: string[] = [];
+
+  const items: GetRevenueLineItem[] = rows.map((row) => {
+    const unitsSold = Number(row.units_sold);
+    const txCount = Number(row.transaction_count);
+    const unitPriceCents =
+      row.unit_price_cents === null || row.unit_price_cents === undefined
+        ? null
+        : Number(row.unit_price_cents);
+    const lineRevenueCents =
+      row.line_revenue_cents === null || row.line_revenue_cents === undefined
+        ? null
+        : Number(row.line_revenue_cents);
+
+    totalItemsSold += unitsSold;
+    transactionCount += txCount;
+
+    if (lineRevenueCents !== null) {
+      totalRevenueCents += lineRevenueCents;
+    } else {
+      unpricedMedications.push(String(row.brand_name));
+    }
+
+    return {
+      medication_id: Number(row.medication_id),
+      brand_name: String(row.brand_name),
+      generic_name:
+        row.generic_name === null || row.generic_name === undefined
+          ? null
+          : String(row.generic_name),
+      strength: row.strength === null || row.strength === undefined ? null : String(row.strength),
+      dosage_form:
+        row.dosage_form === null || row.dosage_form === undefined ? null : String(row.dosage_form),
+      units_sold: unitsSold,
+      transaction_count: txCount,
+      unit_price_cents: unitPriceCents,
+      unit_price_display:
+        unitPriceCents === null
+          ? 'price not entered'
+          : formatMoneyDisplay(unitPriceCents, 'DZD', { includeCentsSuffix: false }),
+      line_revenue_cents: lineRevenueCents,
+      line_revenue_display:
+        lineRevenueCents === null
+          ? 'price not entered'
+          : formatMoneyDisplay(lineRevenueCents, 'DZD', { includeCentsSuffix: false }),
+      currency: 'DA',
+    };
+  });
+
+  return {
+    start_date: startDate,
+    end_date: endDate,
+    requested_start_date: requestedStartDate,
+    requested_end_date: requestedEndDate,
+    total_revenue_cents: totalRevenueCents,
+    total_revenue_da: totalRevenueCents,
+    total_revenue_display: formatMoneyDisplay(totalRevenueCents, 'DZD', {
+      includeCentsSuffix: false,
+    }),
+    total_items_sold: totalItemsSold,
+    transaction_count: transactionCount,
+    currency: 'DA',
+    has_unpriced_dispenses: unpricedMedications.length > 0,
+    unpriced_medications: unpricedMedications,
+    items,
+  };
+}
+
+interface RawTopSellingSqlRow {
+  medication_id: number;
+  brand_name: string;
+  generic_name: string | null;
+  strength: string | null;
+  dosage_form: string | null;
+  category: string | null;
+  therapeutic_class: string | null;
+  atc_code: string | null;
+  zone: string | null;
+  shelf: string | null;
+  bin: string | null;
+  unit_price_cents: number | null;
+  units_sold: number;
+  transaction_count: number;
+  line_revenue_cents: number | null;
+  current_stock: number;
+}
+
+/**
+ * Deterministic SQL query for `get_top_selling(category, limit)`:
+ * Returns the top N most dispensed medications based on negative `stock_movement` deltas
+ * with reason 'dispense', optionally filtered by `therapeutic_class` or `category`.
+ */
+export async function queryTopSellingMedications(
+  db: DatabasePort,
+  options: { category?: string | null; limit?: number } = {},
+): Promise<GetTopSellingToolOutput> {
+  const rawLimit = options.limit ?? 3;
+  const limit = Number.isInteger(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 50) : 3;
+  const rawCategory = (options.category ?? '').trim();
+  const isAllCategory =
+    !rawCategory ||
+    rawCategory.toLowerCase() === 'all' ||
+    rawCategory.toLowerCase() === 'any' ||
+    rawCategory === '*';
+
+  const predicates: string[] = [];
+  const params: SqlParam[] = [];
+
+  if (!isAllCategory) {
+    const { matchedTerms, atcPrefixes } = expandCategoryOrSymptomTerms(rawCategory);
+    for (const term of matchedTerms) {
+      const likePattern = `%${term}%`;
+      predicates.push("LOWER(COALESCE(m.category, '')) LIKE ?");
+      params.push(likePattern);
+      predicates.push("LOWER(COALESCE(m.therapeutic_class, '')) LIKE ?");
+      params.push(likePattern);
+      predicates.push("LOWER(COALESCE(m.location_note, '')) LIKE ?");
+      params.push(likePattern);
+    }
+    for (const prefix of atcPrefixes) {
+      predicates.push("UPPER(COALESCE(m.atc_code, '')) LIKE ?");
+      params.push(`${prefix}%`);
+    }
+  }
+
+  const whereClause = predicates.length > 0 ? `WHERE (${predicates.join(' OR ')})` : '';
+  params.push(limit);
+
+  const sql = `
+    WITH dispense_totals AS (
+      SELECT
+        sm.medication_id,
+        COALESCE(SUM(-sm.delta), 0) AS units_sold,
+        COUNT(sm.id) AS transaction_count
+      FROM stock_movement sm
+      WHERE sm.delta < 0
+        AND (
+          LOWER(TRIM(COALESCE(sm.reason, ''))) = 'dispense'
+          OR LOWER(TRIM(COALESCE(sm.reason, ''))) LIKE 'dispense:%'
+          OR LOWER(TRIM(COALESCE(sm.reason, ''))) LIKE '%dispense%'
+        )
+      GROUP BY sm.medication_id
+    ),
+    batch_totals AS (
+      SELECT
+        b.medication_id,
+        COALESCE(SUM(b.quantity), 0) AS current_stock
+      FROM batch b
+      GROUP BY b.medication_id
+    )
+    SELECT
+      m.id AS medication_id,
+      m.brand_name,
+      m.generic_name,
+      m.strength,
+      m.dosage_form,
+      m.category,
+      m.therapeutic_class,
+      m.atc_code,
+      m.zone,
+      m.shelf,
+      m.bin,
+      m.unit_price_cents,
+      COALESCE(dt.units_sold, 0) AS units_sold,
+      COALESCE(dt.transaction_count, 0) AS transaction_count,
+      CASE
+        WHEN m.unit_price_cents IS NOT NULL
+          THEN COALESCE(dt.units_sold, 0) * m.unit_price_cents
+        ELSE NULL
+      END AS line_revenue_cents,
+      COALESCE(bt.current_stock, 0) AS current_stock
+    FROM medication m
+    LEFT JOIN dispense_totals dt ON dt.medication_id = m.id
+    LEFT JOIN batch_totals bt ON bt.medication_id = m.id
+    ${whereClause}
+    ORDER BY
+      COALESCE(dt.units_sold, 0) DESC,
+      COALESCE(line_revenue_cents, 0) DESC,
+      m.brand_name ASC,
+      m.id ASC
+    LIMIT ?;
+  `;
+
+  const rows = await db.query<RawTopSellingSqlRow>(sql, params);
+
+  let totalUnitsSold = 0;
+  let totalRevenueDa = 0;
+
+  const items: TopSellingMedicationItem[] = rows.map((row, idx) => {
+    const unitsSold = Number(row.units_sold);
+    const txCount = Number(row.transaction_count);
+    const unitPriceCents =
+      row.unit_price_cents === null || row.unit_price_cents === undefined
+        ? null
+        : Number(row.unit_price_cents);
+    const lineRevenueCents =
+      row.line_revenue_cents === null || row.line_revenue_cents === undefined
+        ? null
+        : Number(row.line_revenue_cents);
+
+    totalUnitsSold += unitsSold;
+    if (lineRevenueCents !== null) {
+      totalRevenueDa += lineRevenueCents;
+    }
+
+    return {
+      rank: idx + 1,
+      medication_id: Number(row.medication_id),
+      brand_name: String(row.brand_name),
+      generic_name:
+        row.generic_name === null || row.generic_name === undefined
+          ? null
+          : String(row.generic_name),
+      strength: row.strength === null || row.strength === undefined ? null : String(row.strength),
+      dosage_form:
+        row.dosage_form === null || row.dosage_form === undefined
+          ? null
+          : String(row.dosage_form),
+      category:
+        row.category === null || row.category === undefined ? null : String(row.category),
+      therapeutic_class:
+        row.therapeutic_class === null || row.therapeutic_class === undefined
+          ? null
+          : String(row.therapeutic_class),
+      atc_code:
+        row.atc_code === null || row.atc_code === undefined ? null : String(row.atc_code),
+      units_sold: unitsSold,
+      transaction_count: txCount,
+      unit_price_cents: unitPriceCents,
+      unit_price_display:
+        unitPriceCents === null
+          ? 'price not entered'
+          : formatMoneyDisplay(unitPriceCents, 'DZD', { includeCentsSuffix: false }),
+      line_revenue_cents: lineRevenueCents,
+      line_revenue_display:
+        lineRevenueCents === null
+          ? 'price not entered'
+          : formatMoneyDisplay(lineRevenueCents, 'DZD', { includeCentsSuffix: false }),
+      current_stock: Number(row.current_stock),
+      location: formatLocationString({ zone: row.zone, shelf: row.shelf, bin: row.bin }),
+    };
+  });
+
+  return {
+    category: isAllCategory ? null : rawCategory,
+    limit,
+    count: items.length,
+    total_units_sold: totalUnitsSold,
+    total_revenue_da: totalRevenueDa,
+    total_revenue_display: formatMoneyDisplay(totalRevenueDa, 'DZD', {
+      includeCentsSuffix: false,
+    }),
+    items,
+  };
+}
+
+interface RawExpiringBatchValueSqlRow {
+  batch_id: number;
+  medication_id: number;
+  brand_name: string;
+  generic_name: string | null;
+  strength: string | null;
+  dosage_form: string | null;
+  zone: string | null;
+  shelf: string | null;
+  bin: string | null;
+  lot_number: string | null;
+  quantity: number;
+  expiry_date: string;
+  days_remaining: number;
+  cost_price_cents: number | null;
+  batch_value_cents: number | null;
+}
+
+const EXPIRING_VALUE_SQL = `
+SELECT
+  b.id AS batch_id,
+  b.medication_id,
+  m.brand_name,
+  m.generic_name,
+  m.strength,
+  m.dosage_form,
+  m.zone,
+  m.shelf,
+  m.bin,
+  b.lot_number,
+  b.quantity,
+  b.expiry_date,
+  CAST(julianday(date(b.expiry_date)) - julianday(date(?)) AS INTEGER) AS days_remaining,
+  m.cost_price_cents,
+  CASE
+    WHEN m.cost_price_cents IS NOT NULL
+      THEN b.quantity * m.cost_price_cents
+    ELSE NULL
+  END AS batch_value_cents
+FROM batch b
+INNER JOIN medication m ON m.id = b.medication_id
+WHERE b.quantity > 0
+  AND date(b.expiry_date) IS NOT NULL
+  AND CAST(julianday(date(b.expiry_date)) - julianday(date(?)) AS INTEGER) >= 0
+  AND CAST(julianday(date(b.expiry_date)) - julianday(date(?)) AS INTEGER) <= ?
+ORDER BY
+  date(b.expiry_date) ASC,
+  b.id ASC;
+`;
+
+/**
+ * Deterministic SQL query for `get_expiring_value()`:
+ * Returns the total financial value (`cost_price_cents * quantity`) of all batches
+ * expiring in the next 30 days.
+ */
+export async function queryExpiringStockValue(
+  db: DatabasePort,
+  options: { withinDays?: number; referenceDate?: string } = {},
+): Promise<GetExpiringValueToolOutput> {
+  const days = options.withinDays ?? 30;
+  const referenceDate = (options.referenceDate ?? new Date().toISOString()).slice(0, 10);
+
+  const rows = await db.query<RawExpiringBatchValueSqlRow>(EXPIRING_VALUE_SQL, [
+    referenceDate,
+    referenceDate,
+    referenceDate,
+    days,
+  ]);
+
+  let totalUnitsExpiring = 0;
+  let totalValueCents = 0;
+  let hasMissingCostPrice = false;
+
+  const batches: ExpiringBatchValueItem[] = rows.map((row) => {
+    const qty = Number(row.quantity);
+    const costCents =
+      row.cost_price_cents === null || row.cost_price_cents === undefined
+        ? null
+        : Number(row.cost_price_cents);
+    const batchValueCents =
+      row.batch_value_cents === null || row.batch_value_cents === undefined
+        ? null
+        : Number(row.batch_value_cents);
+
+    totalUnitsExpiring += qty;
+    if (batchValueCents !== null) {
+      totalValueCents += batchValueCents;
+    } else {
+      hasMissingCostPrice = true;
+    }
+
+    return {
+      batch_id: Number(row.batch_id),
+      medication_id: Number(row.medication_id),
+      brand_name: String(row.brand_name),
+      generic_name:
+        row.generic_name === null || row.generic_name === undefined
+          ? null
+          : String(row.generic_name),
+      strength: row.strength === null || row.strength === undefined ? null : String(row.strength),
+      dosage_form:
+        row.dosage_form === null || row.dosage_form === undefined
+          ? null
+          : String(row.dosage_form),
+      lot_number:
+        row.lot_number === null || row.lot_number === undefined ? null : String(row.lot_number),
+      quantity: qty,
+      expiry_date: String(row.expiry_date),
+      days_remaining: Number(row.days_remaining),
+      cost_price_cents: costCents,
+      cost_price_display:
+        costCents === null
+          ? 'cost price not entered'
+          : formatMoneyDisplay(costCents, 'DZD', { includeCentsSuffix: false }),
+      batch_value_cents: batchValueCents,
+      batch_value_display:
+        batchValueCents === null
+          ? 'cost price not entered'
+          : formatMoneyDisplay(batchValueCents, 'DZD', { includeCentsSuffix: false }),
+      location: formatLocationString({ zone: row.zone, shelf: row.shelf, bin: row.bin }),
+    };
+  });
+
+  return {
+    days,
+    reference_date: referenceDate,
+    batch_count: batches.length,
+    total_units_expiring: totalUnitsExpiring,
+    total_value_cents: totalValueCents,
+    total_value_da: totalValueCents,
+    total_value_display: formatMoneyDisplay(totalValueCents, 'DZD', {
+      includeCentsSuffix: false,
+    }),
+    currency: 'DA',
+    has_missing_cost_price: hasMissingCostPrice,
+    batches,
+  };
+}
+
+/**
+ * Deterministic SQL query for `get_sales_trend(medication_id, days)`:
+ * Analyzes `stock_movement` for a specific medication over the last N days (default 30)
+ * and returns total sales units, average daily sales, current stock, reorder level,
+ * and projected days until stockout.
+ */
+export async function querySalesTrend(
+  db: DatabasePort,
+  medicationId: number,
+  days = 30,
+  referenceTimestamp?: string,
+): Promise<GetSalesTrendToolOutput> {
+  const readOnlyDb = createReadOnlyDatabaseGuard(db);
+  const med = await getMedicationById(readOnlyDb, medicationId);
+  if (!med) {
+    throw new Error(`Medication #${medicationId} not found`);
+  }
+
+  const currentStock = await getTotalStock(readOnlyDb, medicationId);
+  const refIso = (referenceTimestamp ?? new Date().toISOString()).slice(0, 10);
+
+  const sql = `
+    SELECT
+      COALESCE(SUM(-sm.delta), 0) AS total_sales_units,
+      COUNT(sm.id) AS transaction_count
+    FROM stock_movement sm
+    WHERE sm.medication_id = ?
+      AND sm.delta < 0
+      AND (
+        LOWER(TRIM(COALESCE(sm.reason, ''))) = 'dispense'
+        OR LOWER(TRIM(COALESCE(sm.reason, ''))) LIKE 'dispense:%'
+        OR LOWER(TRIM(COALESCE(sm.reason, ''))) LIKE '%dispense%'
+      )
+      AND date(sm.created_at) >= date(?, '-' || ? || ' days')
+      AND date(sm.created_at) <= date(?);
+  `;
+
+  const rows = await readOnlyDb.query<{ total_sales_units: number; transaction_count: number }>(
+    sql,
+    [medicationId, refIso, Math.max(1, days), refIso],
+  );
+
+  const totalSalesUnits = Number(rows[0]?.total_sales_units ?? 0);
+  const transactionCount = Number(rows[0]?.transaction_count ?? 0);
+  const averageDailySales =
+    Math.round((totalSalesUnits / Math.max(1, days)) * 100) / 100;
+
+  let projectedDaysUntilStockout: number | null = null;
+  if (averageDailySales > 0) {
+    projectedDaysUntilStockout = Math.round((currentStock / averageDailySales) * 10) / 10;
+  }
+
+  let stockoutRiskLabel = 'Low';
+  if (currentStock === 0) {
+    stockoutRiskLabel = 'Out of Stock';
+  } else if (projectedDaysUntilStockout !== null) {
+    if (projectedDaysUntilStockout <= 3) {
+      stockoutRiskLabel = 'Critical';
+    } else if (projectedDaysUntilStockout <= 7) {
+      stockoutRiskLabel = 'High';
+    } else if (projectedDaysUntilStockout <= 14) {
+      stockoutRiskLabel = 'Moderate';
+    }
+  }
+
+  return {
+    medication_id: med.id,
+    brand_name: med.brand_name,
+    generic_name: med.generic_name,
+    strength: med.strength,
+    dosage_form: med.dosage_form,
+    days,
+    current_stock: currentStock,
+    reorder_level: med.reorder_level,
+    total_sales_units: totalSalesUnits,
+    transaction_count: transactionCount,
+    average_daily_sales: averageDailySales,
+    projected_days_until_stockout: projectedDaysUntilStockout,
+    stockout_risk_label: stockoutRiskLabel,
+  };
+}
+
+/**
+ * Automatically generates a proactive 3-sentence morning briefing for the pharmacy dashboard
+ * using real database queries via `createReadOnlyDatabaseGuard(db)`.
+ *
+ * Prompt requirement:
+ * "Based on the current stock and recent sales (use the tools), give the pharmacist a 3-sentence morning briefing. Mention 1. The top-selling item, 2. The most critical stockout risk, and 3. A warning about any expiring batches."
+ * If no sales/dispense data exists (e.g. new pharmacy), returns `"Not enough data for a briefing yet. Start dispensing to see insights."`
+ */
+export async function generateDailyBriefing(
+  db: DatabasePort,
+  options: {
+    referenceTimestamp?: string;
+    referenceDate?: string;
+    useRemoteModelEndpoint?: boolean;
+  } = {},
+): Promise<DailyBriefingResult> {
+  const readOnlyDb = createReadOnlyDatabaseGuard(db);
+
+  const topSellingResult = await queryTopSellingMedications(readOnlyDb, { limit: 1 });
+  const lowStockRows = await queryLowStockDashboard(readOnlyDb, {
+    referenceTimestamp: options.referenceTimestamp,
+  });
+  const expiringResult = await queryExpiringSoonDashboard(readOnlyDb, {
+    withinDays: 30,
+    referenceDate: options.referenceDate,
+  });
+
+  const topSellingItem = topSellingResult.items[0];
+  const hasDispenseData = Boolean(topSellingItem && topSellingItem.units_sold > 0);
+
+  const toolCalls: ExecutedToolCallRecord[] = [
+    {
+      id: `tc_brief_top_${Date.now()}`,
+      name: 'get_top_selling',
+      args: { limit: 1 },
+      allowed: true,
+      status: 'executed',
+      result: topSellingResult,
+      timestamp: new Date().toISOString(),
+    },
+    {
+      id: `tc_brief_low_${Date.now()}`,
+      name: 'list_low_stock',
+      args: {},
+      allowed: true,
+      status: 'executed',
+      result: { count: lowStockRows.length, rows: lowStockRows },
+      timestamp: new Date().toISOString(),
+    },
+    {
+      id: `tc_brief_exp_${Date.now()}`,
+      name: 'list_expiring',
+      args: { days: 30 },
+      allowed: true,
+      status: 'executed',
+      result: {
+        days: 30,
+        reference_date: expiringResult.referenceDate,
+        count: expiringResult.batches.length,
+        batches: expiringResult.batches,
+      },
+      timestamp: new Date().toISOString(),
+    },
+  ];
+
+  if (!hasDispenseData) {
+    return {
+      briefing: NO_DATA_BRIEFING_MESSAGE,
+      hasData: false,
+      isAiGenerated: false,
+      toolCalls,
+    };
+  }
+
+  const s1 = `Your top-selling item is **${topSellingItem.brand_name}** with **${topSellingItem.units_sold} units** dispensed.`;
+
+  let s2 = 'Stock levels are currently stable with no immediate critical stockout risks.';
+  if (lowStockRows.length > 0) {
+    const mostCritical = lowStockRows[0];
+    s2 = `The most critical stockout risk is **${mostCritical.brand_name}** with **${mostCritical.current_qty} units** remaining against a reorder level of ${mostCritical.reorder_level}.`;
+  }
+
+  let s3 = 'No active batches are expiring within the next 30 days.';
+  if (expiringResult.batches.length > 0) {
+    const earliestBatch = expiringResult.batches[0];
+    s3 = `Warning: **${expiringResult.batches.length} batch(es)** are expiring within 30 days, including **${earliestBatch.brand_name}** (Lot \`${earliestBatch.lot_number}\`, **${earliestBatch.quantity} units** expiring on ${earliestBatch.expiry_date}).`;
+  }
+
+  const deterministicBriefing = `${s1} ${s2} ${s3}`;
+
+  if (options.useRemoteModelEndpoint && typeof fetch === 'function') {
+    try {
+      const res = await fetch('/api/ai/daily-briefing', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          topSelling: topSellingItem,
+          mostCriticalLowStock: lowStockRows[0] ?? null,
+          expiringCount: expiringResult.batches.length,
+          earliestExpiringBatch: expiringResult.batches[0] ?? null,
+        }),
+      });
+
+      if (res.ok) {
+        const data = (await res.json()) as { briefing?: string };
+        if (data.briefing && data.briefing.trim()) {
+          return {
+            briefing: data.briefing.trim(),
+            hasData: true,
+            isAiGenerated: true,
+            toolCalls,
+          };
+        }
+      }
+    } catch {
+      // Fall back to deterministic briefing
+    }
+  }
+
+  return {
+    briefing: deterministicBriefing,
+    hasData: true,
+    isAiGenerated: false,
+    toolCalls,
+  };
+}
+
 
 const SYMPTOM_OR_CATEGORY_SYNONYMS: readonly {
   triggers: readonly string[];
@@ -1271,6 +2179,9 @@ export function extractCategoryOrSymptomFromPrompt(prompt: string): string | nul
  * - `calc_price`
  * - `get_revenue`
  * - `find_by_symptom_or_category`
+ * - `get_sales_summary`
+ * - `get_top_selling`
+ * - `get_expiring_value`
  */
 export function planReadOnlyToolCalls(
   userMessage: string,
@@ -1287,7 +2198,60 @@ export function planReadOnlyToolCalls(
     return [];
   }
 
-  // 2. Revenue / daily sales queries ("How much did we sell today?", "What is our revenue for 2026-10-26?")
+  // 2. Expiring stock financial value / risk queries ("How much money is at risk from expiring stock?")
+  if (
+    /\b(money\s+(?:is\s+)?at\s+risk|at\s+risk\s+from\s+expir|expiring\s+(?:stock\s+)?value|value\s+of\s+expiring|financial\s+value.*expir|cost\s+of\s+expiring|how\s+much\s+money.*expir|risk\s+from\s+expir)\b/i.test(
+      lower,
+    )
+  ) {
+    return [{ name: 'get_expiring_value', args: {} }];
+  }
+
+  // 3. Top-selling medication queries ("What are my top 3 selling antibiotics?", "top selling medications")
+  if (
+    /\b(top\s+\d*\s*selling|best\s+selling|most\s+dispensed|most\s+sold|top\s+\d+\s+(?:medications|drugs|antibiotics|analgesics|items))\b/i.test(
+      lower,
+    )
+  ) {
+    const limitMatch =
+      lower.match(/\btop\s+(\d+)\b/i) || lower.match(/\b(\d+)\s+(?:most|top|best)\b/i);
+    const limit = limitMatch ? Math.max(1, Number(limitMatch[1])) : 5;
+    const extractedCategory = extractCategoryOrSymptomFromPrompt(userMessage);
+    const args: Record<string, unknown> = { limit };
+    if (extractedCategory) {
+      args.category = extractedCategory;
+    }
+    return [{ name: 'get_top_selling', args }];
+  }
+
+  // 4. Sales summary / date-range revenue queries ("What is today's revenue?", "sales summary from 2026-10-01 to 2026-10-31")
+  if (
+    /\b(today's\s+revenue|todays\s+revenue|sales\s+summary|revenue\s+summary|what\s+is\s+(?:our\s+|the\s+)?revenue|revenue\s+between|sales\s+between|revenue\s+from|sales\s+from)\b/i.test(
+      lower,
+    )
+  ) {
+    const dateMatches = lower.match(/\b(\d{4}-\d{2}-\d{2})\b/g);
+    let startDate = 'today';
+    let endDate = 'today';
+    if (dateMatches && dateMatches.length >= 2) {
+      startDate = dateMatches[0]!;
+      endDate = dateMatches[1]!;
+    } else if (dateMatches && dateMatches.length === 1) {
+      startDate = dateMatches[0]!;
+      endDate = dateMatches[0]!;
+    } else if (/\byesterday\b/i.test(lower)) {
+      startDate = 'yesterday';
+      endDate = 'yesterday';
+    }
+    return [
+      {
+        name: 'get_sales_summary',
+        args: { start_date: startDate, end_date: endDate },
+      },
+    ];
+  }
+
+  // 5. Single-day revenue / daily sales queries ("How much did we sell today?", "What is our revenue for 2026-10-26?")
   if (
     /\b(revenue|total\s+sales|daily\s+sales|sales\s+today|sales\s+yesterday|sales\s+for|sales\s+on|how\s+much\s+did\s+we\s+sell|what\s+did\s+we\s+sell|how\s+much\s+have\s+we\s+sold|how\s+much\s+was\s+sold|sold\s+today|sold\s+yesterday|sell\s+today|sell\s+yesterday|sell\s+on)\b/i.test(
       lower,
@@ -1303,7 +2267,7 @@ export function planReadOnlyToolCalls(
     return [{ name: 'get_revenue', args: { date: dateArg } }];
   }
 
-  // 3. Low stock queries ("what's running low", "low stock", "reorder")
+  // 6. Low stock queries ("what's running low", "low stock", "reorder")
   if (
     /\b(running\s+low|low\s+stock|low-stock|need\s+to\s+reorder|below\s+reorder|out\s+of\s+stock|shortage)\b/i.test(
       lower,
@@ -1312,7 +2276,7 @@ export function planReadOnlyToolCalls(
     return [{ name: 'list_low_stock', args: {} }];
   }
 
-  // 4. Expiring queries ("What is expiring this month?", "what expires this month", "expiring in 60 days")
+  // 7. Expiring queries ("What is expiring this month?", "what expires this month", "expiring in 60 days")
   if (/\b(expir(?:e|es|ing)|this\s+month|next\s+month|soon\s+to\s+expire)\b/i.test(lower)) {
     let days = 90;
     const daysMatch = lower.match(/\b(\d+)\s*days?\b/);
@@ -1328,13 +2292,13 @@ export function planReadOnlyToolCalls(
     return [{ name: 'list_expiring', args: { days } }];
   }
 
-  // 5. Symptom or category queries ("Find Antibacterial medications", "Medications by category Antibacterial")
+  // 8. Symptom or category queries ("Find Antibacterial medications", "Medications by category Antibacterial")
   const categoryQuery = extractCategoryOrSymptomFromPrompt(userMessage);
   if (categoryQuery) {
     return [{ name: 'find_by_symptom_or_category', args: { category: categoryQuery } }];
   }
 
-  // 6. Price calculation / "how much" queries
+  // 9. Price calculation / "how much" queries
   if (/\b(how\s+much|price|cost|total|calculate|calc|discount|%\s*off|tax)\b/i.test(lower)) {
     const qtyMatch = lower.match(
       /\b(\d+)\s*(?:boxes|box|packs|pack|units|unit|pens|pen|bottles|vials|x|of)\b/i,
@@ -1382,7 +2346,7 @@ export function planReadOnlyToolCalls(
     ];
   }
 
-  // 7. Location / stock lookup ("where are the amoxicillin capsules", "how many amoxil", etc.)
+  // 10. Location / stock lookup ("where are the amoxicillin capsules", "how many amoxil", etc.)
   const medQuery = extractMedicationQueryFromPrompt(userMessage, options.contextMedicationName);
   return [
     {
@@ -1422,7 +2386,78 @@ export function synthesizeGroundedResponseFromTools(
       continue;
     }
 
-    if (call.name === 'get_revenue') {
+    if (call.name === 'get_sales_summary') {
+      const output = call.result as GetSalesSummaryToolOutput;
+      const dateRangeLabel =
+        output.start_date === output.end_date
+          ? `**${output.start_date}**`
+          : `**${output.start_date}** to **${output.end_date}**`;
+
+      if (output.items.length === 0) {
+        parts.push(
+          `**Sales Summary (${dateRangeLabel}):**\n- **Total Revenue:** **${output.total_revenue_display}**\n- **Total Items Sold:** **0 items** (0 dispense transactions recorded)`,
+        );
+      } else {
+        const itemLines = output.items.map((item) => {
+          if (item.unit_price_cents === null || item.line_revenue_cents === null) {
+            return `- **${item.brand_name}** (${item.strength ?? ''}): **${item.units_sold} items** sold — **price not entered**`;
+          }
+          return `- **${item.brand_name}** (${item.strength ?? ''}): **${item.units_sold} items** × ${item.unit_price_display} = **${item.line_revenue_display}**`;
+        });
+        const unpricedNote = output.has_unpriced_dispenses
+          ? `\n- **Unpriced Dispenses:** ${output.unpriced_medications.join(', ')} (**price not entered**)`
+          : '';
+        parts.push(
+          `**Sales Summary (${dateRangeLabel}):**\n- **Total Revenue:** **${output.total_revenue_display}**\n- **Total Items Sold:** **${output.total_items_sold} items** (${output.transaction_count} dispense transaction(s))\n${itemLines.join('\n')}${unpricedNote}`,
+        );
+      }
+    } else if (call.name === 'get_top_selling') {
+      const output = call.result as GetTopSellingToolOutput;
+      const categoryHeading = output.category ? ` (${output.category})` : '';
+      if (output.items.length === 0) {
+        parts.push(
+          `**Top ${output.limit} Selling Medications${categoryHeading}:**\n- No matching medications or dispense records found for this filter.`,
+        );
+      } else {
+        const itemLines = output.items.map((item, idx) => {
+          const revLabel =
+            item.unit_price_cents === null
+              ? 'price not entered'
+              : `**${item.line_revenue_display}** (${item.unit_price_display}/unit)`;
+          const classLabel = item.therapeutic_class || item.category || 'Uncategorized';
+          return `- **#${idx + 1} ${item.brand_name}** (${item.generic_name ?? 'N/A'} · ${item.strength ?? ''}) — **${item.units_sold} units sold** · Revenue: ${revLabel} · Class: ${classLabel}`;
+        });
+        parts.push(
+          `**Top ${output.items.length} Selling Medications${categoryHeading}:**\n- **Combined Units Sold:** **${output.total_units_sold} units**\n- **Combined Revenue:** **${output.total_revenue_display}**\n${itemLines.join('\n')}`,
+        );
+      }
+    } else if (call.name === 'get_expiring_value') {
+      const output = call.result as GetExpiringValueToolOutput;
+      if (output.batches.length === 0) {
+        parts.push(
+          `**Expiring Stock Financial Risk (Next ${output.days} Days):**\n- **Total Value at Risk:** **0 DA**\n- **Expiring Batches:** **0 batches** expiring within ${output.days} days of **${output.reference_date}**`,
+        );
+      } else {
+        const batchLines = output.batches.map((b) => {
+          if (b.cost_price_cents === null || b.batch_value_cents === null) {
+            return `- **${b.brand_name}** (${b.strength ?? ''} · Lot \`${b.lot_number}\`) — **${b.quantity} units** expiring **${b.expiry_date}** (${b.days_remaining} days left) · Cost: **cost price not entered**`;
+          }
+          return `- **${b.brand_name}** (${b.strength ?? ''} · Lot \`${b.lot_number}\`) — **${b.quantity} units** × ${b.cost_price_display} cost = **${b.batch_value_display}** (expires **${b.expiry_date}**, ${b.days_remaining} days left at ${b.location})`;
+        });
+        parts.push(
+          `**Expiring Stock Financial Risk (Next ${output.days} Days):**\n- **Total Financial Value at Risk:** **${output.total_value_display}**\n- **Affected Inventory:** **${output.total_units_expiring} units** across **${output.batch_count} batch(es)** (reference date **${output.reference_date}**)\n${batchLines.join('\n')}`,
+        );
+      }
+    } else if (call.name === 'get_sales_trend') {
+      const output = call.result as GetSalesTrendToolOutput;
+      const projText =
+        output.projected_days_until_stockout !== null
+          ? `**${output.projected_days_until_stockout} days**`
+          : 'N/A (no sales history)';
+      parts.push(
+        `**Sales Trend for ${output.brand_name}** (${output.days}-day analysis):\n- **Total Sales:** **${output.total_sales_units} units** across ${output.transaction_count} transaction(s)\n- **Avg Daily Sales:** **${output.average_daily_sales} units/day**\n- **Current Stock:** **${output.current_stock} units** (Reorder level: ${output.reorder_level})\n- **Projected Days Until Stockout:** ${projText} (Risk: **${output.stockout_risk_label}**)`,
+      );
+    } else if (call.name === 'get_revenue') {
       const output = call.result as GetRevenueToolOutput;
       if (output.items.length === 0) {
         parts.push(

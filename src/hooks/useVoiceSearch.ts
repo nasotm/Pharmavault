@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { queryDevicePermission } from '../utils/permissions';
 
 // Web Speech API interfaces
 interface SpeechRecognitionResult {
@@ -50,7 +51,7 @@ export function formatSpeechErrorMessage(errorCode: string): string {
     return 'Voice search is unavailable on this network or browser. Please type the medication name or use the barcode scanner instead.';
   }
   if (errorCode === 'not-allowed' || errorCode === 'service-not-allowed') {
-    return 'Microphone access was denied. Please allow microphone permissions in your browser to search by voice.';
+    return 'Microphone access was denied. Please allow microphone permissions in your browser address bar (click the lock or tune icon and set Microphone to Allow).';
   }
   if (errorCode === 'no-speech') {
     return 'No speech was detected. Please try speaking closer to the microphone.';
@@ -108,6 +109,16 @@ export function useVoiceSearch(
       setErrorMessage('Web Speech API is not supported in this browser.');
       return;
     }
+
+    // Pre-check permission state
+    void queryDevicePermission('microphone').then((micState) => {
+      if (micState === 'denied') {
+        setIsListening(false);
+        setErrorMessage(
+          'Microphone access is blocked in your browser settings. To use voice search: click the site settings or lock icon in your address bar, set Microphone to Allow, and try again.',
+        );
+      }
+    });
 
     try {
       if (recognitionRef.current) {

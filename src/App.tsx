@@ -11,14 +11,15 @@ import { MedicationDetailSlideOver } from './components/MedicationDetailSlideOve
 import { NotificationCenter } from './components/NotificationCenter';
 import { OperationalDashboards } from './components/OperationalDashboards';
 import { PendingMedicalReviewSection } from './components/PendingMedicalReviewSection';
+import { PermissionSettingsSection } from './components/PermissionSettingsSection';
 import { PharmacyAiAssistantPanel } from './components/PharmacyAiAssistantPanel';
 import { PrimarySearchExperience } from './components/PrimarySearchExperience';
 import { PWAInstallSection } from './components/PWAInstallSection';
 import { StandalonePricingCalculator } from './components/StandalonePricingCalculator';
 import { useTheme } from './hooks/useTheme';
 import {
-  ensureDefaultPin,
-  isSessionUnlocked,
+  isPinLockEnabled,
+  shouldShowLockScreen,
   setSessionUnlocked,
 } from './utils/pinLock';
 import {
@@ -57,10 +58,8 @@ type WorkspaceTab = 'search' | 'dashboard' | 'inventory' | 'settings';
 
 export default function App() {
   const { isDark, toggleTheme } = useTheme();
-  const [isLocked, setIsLocked] = useState<boolean>(() => {
-    ensureDefaultPin();
-    return !isSessionUnlocked();
-  });
+  const [isPinEnabled, setIsPinEnabled] = useState<boolean>(() => isPinLockEnabled());
+  const [isLocked, setIsLocked] = useState<boolean>(() => shouldShowLockScreen());
   const [snapshot, setSnapshot] = useState<FoundationBootSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('search');
@@ -71,6 +70,10 @@ export default function App() {
   };
 
   const handleLockApp = () => {
+    if (!isPinLockEnabled()) {
+      setActiveTab('settings');
+      return;
+    }
     setSessionUnlocked(false);
     setIsLocked(true);
   };
@@ -289,8 +292,8 @@ export default function App() {
               type="button"
               data-testid="navbar-lock-btn"
               onClick={handleLockApp}
-              title="Lock App"
-              aria-label="Lock App"
+              title={isPinEnabled ? 'Lock App Terminal' : 'PIN Lock is Disabled (Click to configure in Settings)'}
+              aria-label={isPinEnabled ? 'Lock App Terminal' : 'PIN Lock Disabled'}
               className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 text-xs font-semibold rounded-lg border bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-rose-50 dark:hover:bg-rose-950/50 hover:text-rose-700 dark:hover:text-rose-300 hover:border-rose-200 dark:hover:border-rose-800 transition-colors cursor-pointer"
             >
               <Lock className="w-3.5 h-3.5" aria-hidden="true" />
@@ -851,9 +854,22 @@ export default function App() {
                 />
               </div>
 
+              {/* Permission Settings Section (Camera & Microphone) */}
+              <div className="pt-2">
+                <PermissionSettingsSection />
+              </div>
+
               {/* Security Lock & Change PIN Section */}
               <div className="pt-2">
-                <ChangePinSection onLockNow={handleLockApp} />
+                <ChangePinSection
+                  onLockNow={handleLockApp}
+                  onPinToggled={(enabled) => {
+                    setIsPinEnabled(enabled);
+                    if (!enabled) {
+                      setIsLocked(false);
+                    }
+                  }}
+                />
               </div>
 
               {/* PWA Install App Section */}
