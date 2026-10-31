@@ -2,17 +2,34 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   AlertCircle,
+  AlertTriangle,
+  Archive,
+  ArchiveRestore,
   Camera,
+  CheckCircle2,
   ChevronDown,
   ChevronUp,
+  Globe,
+  Loader2,
   Sparkles,
   Stethoscope,
+  Trash2,
+  X,
 } from 'lucide-react';
 import {
+  fetchFromOpenFDA,
+  fetchInteractionsFromRxNorm,
+} from '../services/medicalEnrichmentService';
+import {
+  archiveMedication,
+  checkMedicationDeletionEligibility,
+  deleteMedication,
   getRepositoryDatabase,
+  unarchiveMedication,
   updateMedicationFromImport,
   updateMedicationLocalInventory,
   updateMedicationMedicalInfo,
+  type DeletionEligibilityResult,
 } from '../db/repository';
 import { type CurrentUserProfile } from '../movements';
 import { formatMedicationPriceInDa } from '../pricing';
@@ -95,6 +112,21 @@ export const MedicationDetailSlideOver: React.FC<MedicationDetailSlideOverProps>
   const [isFindingGenerics, setIsFindingGenerics] = useState<boolean>(false);
   const [genericSubResult, setGenericSubResult] = useState<GenericSubstitutionResult | null>(null);
 
+  // Global Medical Enrichment (OpenFDA & RxNorm) state
+  const [isEnrichingGlobalData, setIsEnrichingGlobalData] = useState<boolean>(false);
+  const [enrichmentMessage, setEnrichmentMessage] = useState<{
+    type: 'success' | 'info' | 'error';
+    message: string;
+  } | null>(null);
+
+  // Danger Zone / Delete & Archive State
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState<boolean>(false);
+  const [isCheckingEligibility, setIsCheckingEligibility] = useState<boolean>(false);
+  const [eligibilityResult, setEligibilityResult] = useState<DeletionEligibilityResult | null>(null);
+  const [isDeleting, setIsDeleting] = useState<boolean>(false);
+  const [isArchiving, setIsArchiving] = useState<boolean>(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
   const loadDetail = useCallback(async (id: number) => {
     try {
       const db = getRepositoryDatabase();
@@ -113,6 +145,11 @@ export const MedicationDetailSlideOver: React.FC<MedicationDetailSlideOverProps>
       setMedicalInfoFeedback(null);
       setGenericSubResult(null);
       setIsFindingGenerics(false);
+      setIsEnrichingGlobalData(false);
+      setEnrichmentMessage(null);
+      setIsDeleteModalOpen(false);
+      setEligibilityResult(null);
+      setDeleteError(null);
       return;
     }
     setIsEditingLocation(false);
@@ -121,6 +158,11 @@ export const MedicationDetailSlideOver: React.FC<MedicationDetailSlideOverProps>
     setMedicalInfoFeedback(null);
     setGenericSubResult(null);
     setIsFindingGenerics(false);
+    setIsEnrichingGlobalData(false);
+    setEnrichmentMessage(null);
+    setIsDeleteModalOpen(false);
+    setEligibilityResult(null);
+    setDeleteError(null);
     if (initialDetail && initialDetail.medication.id === medicationId) {
       setDetail(initialDetail);
     }
@@ -245,6 +287,94 @@ export const MedicationDetailSlideOver: React.FC<MedicationDetailSlideOverProps>
     setIsEditingMedicalInfo(false);
     setMedicalInfoFeedback(null);
     setScannedNotification(null);
+    setEnrichmentMessage(null);
+  };
+
+  const handleEnrichWithGlobalData = async () => {
+    if (!medication) return;
+    const dci = medication.generic_name?.trim();
+    setMedicalInfoFeedback(null);
+    setEnrichmentMessage(null);
+    setScannedNotification(null);
+
+    if (!dci) {
+      setEnrichmentMessage({
+        type: 'info',
+        message: 'No global data found for this molecule. You can enter details manually.',
+      });
+      return;
+    }
+
+    setIsEnrichingGlobalData(true);
+    try {
+      const fdaData = await fetchFromOpenFDA(dci);
+
+      if (!fdaData) {
+        setEnrichmentMessage({
+          type: 'info',
+          message: 'No global data found for this molecule. You can enter details manually.',
+        });
+        return;
+      }
+
+      // If not already editing, prime the other draft fields from current medication values
+      if (!isEditingMedicalInfo) {
+        setBrandNameDraft(medication.brand_name ?? '');
+        setGenericNameDraft(medication.generic_name ?? '');
+        setStrengthDraft(medication.strength ?? '');
+        setDosageFormDraft(medication.dosage_form ?? '');
+        setPosologyDraft(medication.posology ?? '');
+        setInteractionsDraft(medication.interactions ?? '');
+        setCompositionDraft(medication.composition ?? '');
+        setTherapeuticClassDraft(medication.therapeutic_class ?? '');
+        setIndicationsDraft(medication.indications ?? '');
+        setPrecautionsDraft(medication.precautions ?? '');
+        setRouteDraft(medication.route ?? '');
+        setSideEffectsDraft(medication.side_effects ?? '');
+      }
+
+      // Populate local form fields (indications, posology, side_effects, precautions) with the results
+      if (fdaData.indications) {
+        setIndicationsDraft(fdaData.indications);
+      }
+      if (fdaData.dosage_and_administration) {
+        setPosologyDraft(fdaData.dosage_and_administration);
+      }
+      if (fdaData.adverse_reactions) {
+        setSideEffectsDraft(fdaData.adverse_reactions);
+      }
+      if (fdaData.warnings) {
+        setPrecautionsDraft(fdaData.warnings);
+      }
+
+      // Query RxNorm interactions as supplementary clinical insights
+      try {
+        const rxInteractions = await fetchInteractionsFromRxNorm(dci);
+        if (rxInteractions.length > 0 && !interactionsDraft.trim()) {
+          const summary = rxInteractions
+            .slice(0, 5)
+            .map((i) => `• ${i.interactionDrug}: ${i.description}`)
+            .join('\n');
+          setInteractionsDraft(summary);
+        }
+      } catch {
+        // Non-blocking interaction lookup
+      }
+
+      setIsMedicalInfoOpen(true);
+      setIsEditingMedicalInfo(true);
+      setEnrichmentMessage({
+        type: 'success',
+        message: 'Details fetched from OpenFDA. Please review and save.',
+      });
+    } catch {
+      setEnrichmentMessage({
+        type: 'info',
+        message: 'No global data found for this molecule. You can enter details manually.',
+      });
+    } finally {
+      setIsEnrichingGlobalData(false);
+    }
   };
 
   const handleLeafletExtracted = (data: ScannedLeafletData) => {
@@ -323,6 +453,68 @@ export const MedicationDetailSlideOver: React.FC<MedicationDetailSlideOverProps>
       });
     } finally {
       setIsSavingMedicalInfo(false);
+    }
+  };
+
+  const handleOpenDeleteModal = async () => {
+    if (!medication) return;
+    setIsDeleteModalOpen(true);
+    setIsCheckingEligibility(true);
+    setDeleteError(null);
+    try {
+      const db = getRepositoryDatabase();
+      const result = await checkMedicationDeletionEligibility(db, medication.id);
+      setEligibilityResult(result);
+    } catch (err: unknown) {
+      setDeleteError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsCheckingEligibility(false);
+    }
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!medication) return;
+    setIsDeleting(true);
+    setDeleteError(null);
+    try {
+      const db = getRepositoryDatabase();
+      await deleteMedication(db, medication.id);
+      setIsDeleteModalOpen(false);
+      await onMutated();
+      onClose();
+    } catch (err: unknown) {
+      setDeleteError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  const handleConfirmArchive = async () => {
+    if (!medication) return;
+    setIsArchiving(true);
+    setDeleteError(null);
+    try {
+      const db = getRepositoryDatabase();
+      await archiveMedication(db, medication.id);
+      setIsDeleteModalOpen(false);
+      await onMutated();
+      onClose();
+    } catch (err: unknown) {
+      setDeleteError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsArchiving(false);
+    }
+  };
+
+  const handleDirectUnarchive = async () => {
+    if (!medication) return;
+    try {
+      const db = getRepositoryDatabase();
+      await unarchiveMedication(db, medication.id);
+      await loadDetail(medication.id);
+      await onMutated();
+    } catch (err: unknown) {
+      setDeleteError(err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -752,7 +944,23 @@ export const MedicationDetailSlideOver: React.FC<MedicationDetailSlideOverProps>
                 </span>
               </button>
 
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  data-testid="enrich-global-data-btn"
+                  disabled={isEnrichingGlobalData}
+                  onClick={() => void handleEnrichWithGlobalData()}
+                  className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-bold text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/80 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 border border-emerald-300 dark:border-emerald-700 rounded-lg shadow-2xs transition-colors shrink-0 cursor-pointer disabled:opacity-50"
+                  title="Enrich indications, posology, side effects, and warnings from OpenFDA"
+                >
+                  {isEnrichingGlobalData ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Globe className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                  )}
+                  <span>{isEnrichingGlobalData ? 'Enriching...' : 'Enrich with Global Data'}</span>
+                </button>
+
                 <button
                   type="button"
                   data-testid="scan-leaflet-btn"
@@ -784,6 +992,39 @@ export const MedicationDetailSlideOver: React.FC<MedicationDetailSlideOverProps>
                 )}
               </div>
             </div>
+
+            {enrichmentMessage && (
+              <div
+                role="status"
+                data-testid={
+                  enrichmentMessage.type === 'success'
+                    ? 'enrichment-success-message'
+                    : 'enrichment-fallback-message'
+                }
+                className={`mx-4 mt-3 text-xs px-3.5 py-2.5 rounded-xl flex items-center justify-between shadow-2xs ${
+                  enrichmentMessage.type === 'success'
+                    ? 'bg-emerald-50 dark:bg-emerald-950/80 text-emerald-900 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-800'
+                    : 'bg-amber-50 dark:bg-amber-950/80 text-amber-900 dark:text-amber-200 border border-amber-200 dark:border-amber-800'
+                }`}
+              >
+                <div className="flex items-center gap-2 font-medium">
+                  {enrichmentMessage.type === 'success' ? (
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                  ) : (
+                    <AlertCircle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+                  )}
+                  <span>{enrichmentMessage.message}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setEnrichmentMessage(null)}
+                  className="p-0.5 rounded-md text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 cursor-pointer"
+                  aria-label="Dismiss notification"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
 
             {medicalInfoFeedback && (
               <div
@@ -1316,9 +1557,201 @@ export const MedicationDetailSlideOver: React.FC<MedicationDetailSlideOverProps>
               )}
             </div>
           )}
+
+          {/* Danger Zone Section */}
+          <div
+            data-testid="danger-zone-section"
+            className="p-4 bg-rose-50/60 dark:bg-rose-950/20 border border-rose-200/80 dark:border-rose-900/40 rounded-xl space-y-3"
+          >
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-rose-600 dark:text-rose-400" />
+              <h4 className="text-xs font-bold uppercase tracking-wider text-rose-900 dark:text-rose-200">
+                Danger Zone
+              </h4>
+              {medication.is_archived === 1 && (
+                <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-700">
+                  Archived
+                </span>
+              )}
+            </div>
+
+            <p className="text-xs text-rose-700/90 dark:text-rose-300/80">
+              Permanently remove this medication if it has no sales or price history, or archive it to safely hide it from active inventory and search results.
+            </p>
+
+            <div className="flex flex-wrap items-center gap-2.5 pt-1">
+              <button
+                type="button"
+                data-testid="delete-medication-btn"
+                onClick={handleOpenDeleteModal}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg bg-rose-600 hover:bg-rose-700 text-white shadow-sm transition-colors cursor-pointer"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                Delete Medication
+              </button>
+
+              {medication.is_archived === 1 ? (
+                <button
+                  type="button"
+                  data-testid="unarchive-medication-btn"
+                  onClick={handleDirectUnarchive}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/60 hover:bg-amber-100 dark:hover:bg-amber-900/60 text-amber-900 dark:text-amber-200 shadow-sm transition-colors cursor-pointer"
+                >
+                  <ArchiveRestore className="w-3.5 h-3.5" />
+                  Restore Active
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  data-testid="archive-medication-btn"
+                  onClick={handleConfirmArchive}
+                  disabled={isArchiving}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700/80 text-slate-700 dark:text-slate-200 shadow-sm transition-colors cursor-pointer"
+                >
+                  {isArchiving ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Archive className="w-3.5 h-3.5" />
+                  )}
+                  Archive Medication
+                </button>
+              )}
+            </div>
+          </div>
         </div>
           </motion.aside>
         </motion.div>
+      )}
+
+      {/* Delete / Archive Confirmation Modal */}
+      {isDeleteModalOpen && medication && (
+        <div
+          data-testid="delete-medication-modal"
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs"
+        >
+          <div className="w-full max-w-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl p-5 space-y-4 text-left">
+            {/* Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+              <div className="flex items-center gap-2 text-rose-600 dark:text-rose-400">
+                <AlertTriangle className="w-5 h-5 shrink-0" />
+                <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                  Delete Medication
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsDeleteModalOpen(false)}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                aria-label="Close dialog"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Prompt Statement */}
+            <p className="text-sm text-slate-700 dark:text-slate-300 leading-relaxed">
+              Are you sure you want to delete <strong className="text-slate-900 dark:text-white font-semibold">{medication.brand_name}</strong>? This action cannot be undone.
+            </p>
+
+            {/* Eligibility checks */}
+            {isCheckingEligibility ? (
+              <div className="p-3 bg-slate-50 dark:bg-slate-800/50 rounded-xl flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+                <Loader2 className="w-4 h-4 animate-spin text-indigo-600 shrink-0" />
+                <span>Checking physical inventory and financial audit history...</span>
+              </div>
+            ) : eligibilityResult?.hasStock ? (
+              <div
+                data-testid="delete-blocked-stock-banner"
+                className="p-3.5 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900/60 rounded-xl flex items-start gap-2.5 text-xs text-rose-800 dark:text-rose-200"
+              >
+                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <div className="font-semibold">Cannot delete: there is still stock in the pharmacy. Please dispense or adjust stock to 0 first.</div>
+                  <div className="text-[11px] text-rose-700 dark:text-rose-300">
+                    Current stock on hand: {eligibilityResult.totalStock} units across batches.
+                  </div>
+                </div>
+              </div>
+            ) : eligibilityResult?.hasHistory ? (
+              <div
+                data-testid="delete-blocked-history-banner"
+                className="p-3.5 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/60 rounded-xl space-y-2 text-xs text-amber-900 dark:text-amber-200"
+              >
+                <div className="flex items-start gap-2 font-semibold">
+                  <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                  <span>Cannot delete: this medication has sales or price history. You can only archive it.</span>
+                </div>
+                <p className="text-[11px] text-amber-800 dark:text-amber-300 pl-6">
+                  To safeguard financial integrity and audit records, medications with past movements ({eligibilityResult.movementCount} movement records) or tariff adjustments ({eligibilityResult.priceHistoryCount} price records) cannot be deleted. Archiving hides this medication from active inventory and search results while keeping all records intact.
+                </p>
+              </div>
+            ) : eligibilityResult?.canDelete ? (
+              <div
+                data-testid="delete-allowed-safe-banner"
+                className="p-3 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900/60 rounded-xl flex items-start gap-2 text-xs text-emerald-800 dark:text-emerald-200"
+              >
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                <div>
+                  No inventory stock and no sales or price history detected. This medication, its aliases, and empty batches can be safely deleted.
+                </div>
+              </div>
+            ) : null}
+
+            {deleteError && (
+              <div className="p-3 bg-rose-100 dark:bg-rose-900/50 border border-rose-300 text-rose-800 dark:text-rose-200 rounded-xl text-xs">
+                {deleteError}
+              </div>
+            )}
+
+            {/* Modal Actions */}
+            <div className="flex items-center justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                data-testid="cancel-delete-btn"
+                onClick={() => setIsDeleteModalOpen(false)}
+                className="px-3.5 py-2 text-xs font-semibold rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 cursor-pointer"
+              >
+                Cancel
+              </button>
+
+              {eligibilityResult?.hasHistory && (
+                <button
+                  type="button"
+                  data-testid="archive-instead-btn"
+                  onClick={handleConfirmArchive}
+                  disabled={isArchiving}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg bg-amber-600 hover:bg-amber-700 text-white shadow-sm cursor-pointer disabled:opacity-50"
+                >
+                  {isArchiving ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Archive className="w-3.5 h-3.5" />
+                  )}
+                  Archive Medication
+                </button>
+              )}
+
+              {eligibilityResult?.canDelete && (
+                <button
+                  type="button"
+                  data-testid="confirm-delete-btn"
+                  onClick={handleConfirmDelete}
+                  disabled={isDeleting || isCheckingEligibility}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg bg-rose-600 hover:bg-rose-700 text-white shadow-sm cursor-pointer disabled:opacity-50"
+                >
+                  {isDeleting ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Trash2 className="w-3.5 h-3.5" />
+                  )}
+                  Delete Permanently
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
       )}
 
       {medication && (

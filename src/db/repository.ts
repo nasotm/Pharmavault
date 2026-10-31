@@ -82,6 +82,7 @@ export interface Medication {
   price_confirmed: 0 | 1;
   price_updated_at: string | null;
   updated_at: string | null;
+  is_archived?: 0 | 1;
 }
 
 export interface MedicationAlias {
@@ -157,6 +158,7 @@ export interface CreateMedicationInput {
   price_confirmed?: 0 | 1 | boolean;
   price_updated_at?: string | null;
   updated_at?: string | null;
+  is_archived?: 0 | 1 | boolean;
 }
 
 export interface UpdateMedicationLocalInventoryInput {
@@ -334,6 +336,7 @@ function normalizeMedicationRow(row: Record<string, SqlParam>): Medication {
         : String(row.price_updated_at),
     updated_at:
       row.updated_at === null || row.updated_at === undefined ? null : String(row.updated_at),
+    is_archived: Number(row.is_archived) === 1 ? 1 : 0,
   };
 }
 
@@ -430,6 +433,7 @@ async function insertMedicationWithPort(
     'price_confirmed',
     'price_updated_at',
     'updated_at',
+    'is_archived',
   ];
 
   const values: SqlParam[] = [
@@ -466,6 +470,7 @@ async function insertMedicationWithPort(
     priceConfirmed,
     priceUpdatedAt,
     updatedAt,
+    input.is_archived ? 1 : 0,
   ];
 
   const placeholders = columns.map(() => '?').join(', ');
@@ -496,8 +501,14 @@ async function getMedicationByBarcodeWithPort(
   return normalizeMedicationRow(rows[0]);
 }
 
-async function listMedicationsWithPort(db: DatabasePort): Promise<Medication[]> {
-  const rows = await db.query<Record<string, SqlParam>>('SELECT * FROM medication ORDER BY id ASC');
+async function listMedicationsWithPort(
+  db: DatabasePort,
+  options?: { includeArchived?: boolean },
+): Promise<Medication[]> {
+  const whereClause = options?.includeArchived ? '' : 'WHERE COALESCE(is_archived, 0) = 0';
+  const rows = await db.query<Record<string, SqlParam>>(
+    `SELECT * FROM medication ${whereClause} ORDER BY id ASC`,
+  );
   return rows.map(normalizeMedicationRow);
 }
 
@@ -708,8 +719,123 @@ async function updateMedicationFromImportWithPort(
   return normalizeMedicationRow(rows[0]);
 }
 
+export interface DeletionEligibilityResult {
+  canDelete: boolean;
+  canArchive: boolean;
+  hasStock: boolean;
+  totalStock: number;
+  hasHistory: boolean;
+  movementCount: number;
+  priceHistoryCount: number;
+  blockReason: string | null;
+}
+
+async function checkMedicationDeletionEligibilityWithPort(
+  db: DatabasePort,
+  id: number,
+): Promise<DeletionEligibilityResult> {
+  const stockRows = await db.query<{ total: number; positive_batches: number }>(
+    `SELECT
+       COALESCE(SUM(quantity), 0) AS total,
+       COALESCE(SUM(CASE WHEN quantity > 0 THEN 1 ELSE 0 END), 0) AS positive_batches
+     FROM batch
+     WHERE medication_id = ?`,
+    [id],
+  );
+  const totalStock = Number(stockRows[0]?.total ?? 0);
+  const positiveBatches = Number(stockRows[0]?.positive_batches ?? 0);
+  const hasStock = totalStock > 0 || positiveBatches > 0;
+
+  const histRows = await db.query<{ movements: number; prices: number }>(
+    `SELECT
+       (SELECT COUNT(*) FROM stock_movement WHERE medication_id = ?) AS movements,
+       (SELECT COUNT(*) FROM price_history WHERE medication_id = ?) AS prices`,
+    [id, id],
+  );
+  const movementCount = Number(histRows[0]?.movements ?? 0);
+  const priceHistoryCount = Number(histRows[0]?.prices ?? 0);
+  const hasHistory = movementCount > 0 || priceHistoryCount > 0;
+
+  let blockReason: string | null = null;
+  if (hasStock) {
+    blockReason =
+      'Cannot delete: there is still stock in the pharmacy. Please dispense or adjust stock to 0 first.';
+  } else if (hasHistory) {
+    blockReason =
+      'Cannot delete: this medication has sales or price history. You can only archive it.';
+  }
+
+  return {
+    canDelete: !hasStock && !hasHistory,
+    canArchive: true,
+    hasStock,
+    totalStock,
+    hasHistory,
+    movementCount,
+    priceHistoryCount,
+    blockReason,
+  };
+}
+
 async function deleteMedicationWithPort(db: DatabasePort, id: number): Promise<void> {
-  await db.exec('DELETE FROM medication WHERE id = ?', [id]);
+  await db.transaction(async (tx) => {
+    // 1. Stock check
+    const stockRows = await tx.query<{ total: number; positive_batches: number }>(
+      `SELECT
+         COALESCE(SUM(quantity), 0) AS total,
+         COALESCE(SUM(CASE WHEN quantity > 0 THEN 1 ELSE 0 END), 0) AS positive_batches
+       FROM batch
+       WHERE medication_id = ?`,
+      [id],
+    );
+    const totalStock = Number(stockRows[0]?.total ?? 0);
+    const positiveBatches = Number(stockRows[0]?.positive_batches ?? 0);
+    if (totalStock > 0 || positiveBatches > 0) {
+      throw new Error(
+        'Cannot delete: there is still stock in the pharmacy. Please dispense or adjust stock to 0 first.',
+      );
+    }
+
+    // 2. History check
+    const histRows = await tx.query<{ movements: number; prices: number }>(
+      `SELECT
+         (SELECT COUNT(*) FROM stock_movement WHERE medication_id = ?) AS movements,
+         (SELECT COUNT(*) FROM price_history WHERE medication_id = ?) AS prices`,
+      [id, id],
+    );
+    const movementCount = Number(histRows[0]?.movements ?? 0);
+    const priceHistoryCount = Number(histRows[0]?.prices ?? 0);
+    if (movementCount > 0 || priceHistoryCount > 0) {
+      throw new Error(
+        'Cannot delete: this medication has sales or price history. You can only archive it.',
+      );
+    }
+
+    // 3. Remove aliases
+    await tx.exec('DELETE FROM medication_alias WHERE medication_id = ?', [id]);
+
+    // 4. Remove empty batches
+    await tx.exec('DELETE FROM batch WHERE medication_id = ?', [id]);
+
+    // 5. Remove medication record
+    await tx.exec('DELETE FROM medication WHERE id = ?', [id]);
+  });
+}
+
+async function archiveMedicationWithPort(db: DatabasePort, id: number): Promise<void> {
+  const nowIso = new Date().toISOString();
+  await db.exec('UPDATE medication SET is_archived = 1, updated_at = ? WHERE id = ?', [
+    nowIso,
+    id,
+  ]);
+}
+
+async function unarchiveMedicationWithPort(db: DatabasePort, id: number): Promise<void> {
+  const nowIso = new Date().toISOString();
+  await db.exec('UPDATE medication SET is_archived = 0, updated_at = ? WHERE id = ?', [
+    nowIso,
+    id,
+  ]);
 }
 
 // =============================================================================
@@ -1444,10 +1570,16 @@ export function getMedicationByBarcode(
   return getMedicationByBarcodeWithPort(getRepositoryDatabase(), dbOrBarcode);
 }
 
-export function listMedications(): Promise<Medication[]>;
-export function listMedications(db: DatabasePort): Promise<Medication[]>;
-export function listMedications(db?: DatabasePort): Promise<Medication[]> {
-  return listMedicationsWithPort(db ?? getRepositoryDatabase());
+export function listMedications(options?: { includeArchived?: boolean }): Promise<Medication[]>;
+export function listMedications(db: DatabasePort, options?: { includeArchived?: boolean }): Promise<Medication[]>;
+export function listMedications(
+  dbOrOptions?: DatabasePort | { includeArchived?: boolean },
+  maybeOptions?: { includeArchived?: boolean },
+): Promise<Medication[]> {
+  if (isDatabasePort(dbOrOptions)) {
+    return listMedicationsWithPort(dbOrOptions, maybeOptions);
+  }
+  return listMedicationsWithPort(getRepositoryDatabase(), dbOrOptions);
 }
 
 export function updateMedicationLocalInventory(
@@ -1534,6 +1666,23 @@ export function updateMedicationFromImport(
   );
 }
 
+export function checkMedicationDeletionEligibility(
+  id: number,
+): Promise<DeletionEligibilityResult>;
+export function checkMedicationDeletionEligibility(
+  db: DatabasePort,
+  id: number,
+): Promise<DeletionEligibilityResult>;
+export function checkMedicationDeletionEligibility(
+  dbOrId: DatabasePort | number,
+  maybeId?: number,
+): Promise<DeletionEligibilityResult> {
+  if (isDatabasePort(dbOrId)) {
+    return checkMedicationDeletionEligibilityWithPort(dbOrId, maybeId as number);
+  }
+  return checkMedicationDeletionEligibilityWithPort(getRepositoryDatabase(), dbOrId);
+}
+
 export function deleteMedication(id: number): Promise<void>;
 export function deleteMedication(db: DatabasePort, id: number): Promise<void>;
 export function deleteMedication(dbOrId: DatabasePort | number, maybeId?: number): Promise<void> {
@@ -1541,6 +1690,24 @@ export function deleteMedication(dbOrId: DatabasePort | number, maybeId?: number
     return deleteMedicationWithPort(dbOrId, maybeId as number);
   }
   return deleteMedicationWithPort(getRepositoryDatabase(), dbOrId);
+}
+
+export function archiveMedication(id: number): Promise<void>;
+export function archiveMedication(db: DatabasePort, id: number): Promise<void>;
+export function archiveMedication(dbOrId: DatabasePort | number, maybeId?: number): Promise<void> {
+  if (isDatabasePort(dbOrId)) {
+    return archiveMedicationWithPort(dbOrId, maybeId as number);
+  }
+  return archiveMedicationWithPort(getRepositoryDatabase(), dbOrId);
+}
+
+export function unarchiveMedication(id: number): Promise<void>;
+export function unarchiveMedication(db: DatabasePort, id: number): Promise<void>;
+export function unarchiveMedication(dbOrId: DatabasePort | number, maybeId?: number): Promise<void> {
+  if (isDatabasePort(dbOrId)) {
+    return unarchiveMedicationWithPort(dbOrId, maybeId as number);
+  }
+  return unarchiveMedicationWithPort(getRepositoryDatabase(), dbOrId);
 }
 
 export function insertAlias(medicationId: number, alias: string): Promise<MedicationAlias>;
@@ -1667,6 +1834,21 @@ export function listMovementsForMedication(
   return listMovementsForMedicationWithPort(getRepositoryDatabase(), dbOrMedId);
 }
 
+export function insertPriceHistory(input: InsertPriceHistoryInput): Promise<PriceHistory>;
+export function insertPriceHistory(
+  db: DatabasePort,
+  input: InsertPriceHistoryInput,
+): Promise<PriceHistory>;
+export function insertPriceHistory(
+  dbOrInput: DatabasePort | InsertPriceHistoryInput,
+  maybeInput?: InsertPriceHistoryInput,
+): Promise<PriceHistory> {
+  if (isDatabasePort(dbOrInput)) {
+    return insertPriceHistoryWithPort(dbOrInput, maybeInput as InsertPriceHistoryInput);
+  }
+  return insertPriceHistoryWithPort(getRepositoryDatabase(), dbOrInput);
+}
+
 export function listPriceHistoryForMedication(medicationId: number): Promise<PriceHistory[]>;
 export function listPriceHistoryForMedication(
   db: DatabasePort,
@@ -1760,14 +1942,19 @@ export function createRepository(db: DatabasePort) {
     insertMedication: (input: CreateMedicationInput) => insertMedicationWithPort(db, input),
     getMedicationById: (id: number) => getMedicationByIdWithPort(db, id),
     getMedicationByBarcode: (barcode: string) => getMedicationByBarcodeWithPort(db, barcode),
-    listMedications: () => listMedicationsWithPort(db),
+    listMedications: (options?: { includeArchived?: boolean }) =>
+      listMedicationsWithPort(db, options),
     updateMedicationLocalInventory: (id: number, input: UpdateMedicationLocalInventoryInput) =>
       updateMedicationLocalInventoryWithPort(db, id, input),
     updateMedicationMedicalInfo: (id: number, input: UpdateMedicationMedicalInfoInput) =>
       updateMedicationMedicalInfoWithPort(db, id, input),
     updateMedicationFromImport: (id: number, input: Partial<CreateMedicationInput>) =>
       updateMedicationFromImportWithPort(db, id, input),
+    checkMedicationDeletionEligibility: (id: number) =>
+      checkMedicationDeletionEligibilityWithPort(db, id),
     deleteMedication: (id: number) => deleteMedicationWithPort(db, id),
+    archiveMedication: (id: number) => archiveMedicationWithPort(db, id),
+    unarchiveMedication: (id: number) => unarchiveMedicationWithPort(db, id),
 
     // Medication Alias CRUD
     insertAlias: (medicationId: number, alias: string) =>

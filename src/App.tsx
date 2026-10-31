@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Lock, Moon, Sun } from 'lucide-react';
+import { CheckCircle2, Lock, Moon, Plus, Sun, X } from 'lucide-react';
 import { AlgerianImportModal } from './components/AlgerianImportModal';
+import { AlgerianNomenclatureImportCard } from './components/AlgerianNomenclatureImportCard';
+import { ManualMedicationModal } from './components/ManualMedicationModal';
 import { BulkImportFlow } from './components/BulkImportFlow';
 import { ChangePinSection } from './components/ChangePinSection';
 import { CurrencySettingsSection } from './components/CurrencySettingsSection';
@@ -16,6 +18,7 @@ import { PharmacyAiAssistantPanel } from './components/PharmacyAiAssistantPanel'
 import { PrimarySearchExperience } from './components/PrimarySearchExperience';
 import { PWAInstallSection } from './components/PWAInstallSection';
 import { StandalonePricingCalculator } from './components/StandalonePricingCalculator';
+import { useOnlineStatus } from './hooks/useOnlineStatus';
 import { useTheme } from './hooks/useTheme';
 import {
   isPinLockEnabled,
@@ -57,6 +60,7 @@ import {
 type WorkspaceTab = 'search' | 'dashboard' | 'inventory' | 'settings';
 
 export default function App() {
+  const isOnline = useOnlineStatus();
   const { isDark, toggleTheme } = useTheme();
   const [isPinEnabled, setIsPinEnabled] = useState<boolean>(() => isPinLockEnabled());
   const [isLocked, setIsLocked] = useState<boolean>(() => shouldShowLockScreen());
@@ -86,6 +90,17 @@ export default function App() {
   const [inventoryFilter, setInventoryFilter] = useState<string>('');
   const [showCalculator, setShowCalculator] = useState<boolean>(false);
   const [showAlgerianImport, setShowAlgerianImport] = useState<boolean>(false);
+  const [showManualAddModal, setShowManualAddModal] = useState<boolean>(false);
+  const [manualAddSuccessToast, setManualAddSuccessToast] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (manualAddSuccessToast) {
+      const timer = setTimeout(() => {
+        setManualAddSuccessToast(null);
+      }, 4000);
+      return () => clearTimeout(timer);
+    }
+  }, [manualAddSuccessToast]);
 
   // Current pharmacist user profile (stored locally)
   const [currentUser, setCurrentUser] = useState<CurrentUserProfile>(() =>
@@ -249,6 +264,15 @@ export default function App() {
 
           {/* Right: Active Pharmacist Indicator, Notification Center, Theme Toggle & Settings Tab */}
           <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
+            {!isOnline && (
+              <span
+                data-testid="header-offline-mode-badge"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-full bg-amber-500/15 text-amber-800 dark:text-amber-300 border border-amber-500/30"
+              >
+                <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
+                Offline Mode
+              </span>
+            )}
             <span className="hidden md:inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-600 dark:text-slate-300 bg-slate-100/80 dark:bg-slate-800/80 rounded-lg">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
               {currentUser.name}
@@ -451,6 +475,27 @@ export default function App() {
               />
             )}
 
+            {manualAddSuccessToast && (
+              <div
+                role="status"
+                data-testid="manual-add-toast"
+                className="mb-4 p-3.5 rounded-2xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200 text-xs flex items-center justify-between shadow-xs transition-all"
+              >
+                <div className="flex items-center gap-2 font-medium">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                  <span>{manualAddSuccessToast}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setManualAddSuccessToast(null)}
+                  className="p-1 rounded-md text-emerald-600 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 transition-colors cursor-pointer"
+                  aria-label="Dismiss notification"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+
             {/* Full Medication List */}
             <section
               id="catalog-layer"
@@ -467,18 +512,30 @@ export default function App() {
                   </p>
                 </div>
 
-                <div className="w-full sm:w-72">
-                  <label htmlFor="inventory-table-filter" className="sr-only">
-                    Filter inventory list
-                  </label>
-                  <input
-                    id="inventory-table-filter"
-                    type="search"
-                    value={inventoryFilter}
-                    onChange={(e) => setInventoryFilter(e.target.value)}
-                    placeholder="Filter by name, generic, or zone..."
-                    className="w-full px-3.5 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-100 rounded-xl focus:bg-white dark:focus:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-600"
-                  />
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 w-full sm:w-auto">
+                  <div className="w-full sm:w-64">
+                    <label htmlFor="inventory-table-filter" className="sr-only">
+                      Filter inventory list
+                    </label>
+                    <input
+                      id="inventory-table-filter"
+                      type="search"
+                      value={inventoryFilter}
+                      onChange={(e) => setInventoryFilter(e.target.value)}
+                      placeholder="Filter by name, generic, or zone..."
+                      className="w-full px-3.5 py-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-100 rounded-xl focus:bg-white dark:focus:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-600"
+                    />
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowManualAddModal(true)}
+                    data-testid="add-medication-btn"
+                    className="inline-flex items-center justify-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-sky-600 hover:bg-sky-500 active:bg-sky-700 rounded-xl shadow-xs transition-colors shrink-0 cursor-pointer"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>+ Add Medication</span>
+                  </button>
                 </div>
               </div>
 
@@ -881,6 +938,9 @@ export default function App() {
             {/* Database Backup & Restore */}
             <DatabaseBackupRestorePanel onRestoreCommitted={refreshSnapshot} />
 
+            {/* Hugging Face Algerian Drug Nomenclature CSV Import */}
+            <AlgerianNomenclatureImportCard onImportCommitted={refreshSnapshot} />
+
             {/* Bulk CSV Import Flow */}
             <BulkImportFlow
               onImportCommitted={refreshSnapshot}
@@ -911,6 +971,17 @@ export default function App() {
         onImportCommitted={refreshSnapshot}
         currentUser={currentUser}
         onNavigateToPendingReview={() => setActiveTab('inventory')}
+      />
+
+      {/* Manual Add Medication Modal */}
+      <ManualMedicationModal
+        isOpen={showManualAddModal}
+        onClose={() => setShowManualAddModal(false)}
+        onMedicationSaved={async () => {
+          await refreshSnapshot();
+          setManualAddSuccessToast('Medication added successfully to inventory!');
+        }}
+        onDatabaseMutated={refreshSnapshot}
       />
 
       {/* Floating Action Button AI Assistant in Bottom-Right Corner */}

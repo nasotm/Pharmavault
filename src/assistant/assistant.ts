@@ -1706,6 +1706,7 @@ export async function generateDailyBriefing(
     referenceTimestamp?: string;
     referenceDate?: string;
     useRemoteModelEndpoint?: boolean;
+    isOffline?: boolean;
   } = {},
 ): Promise<DailyBriefingResult> {
   const readOnlyDb = createReadOnlyDatabaseGuard(db);
@@ -1718,9 +1719,6 @@ export async function generateDailyBriefing(
     withinDays: 30,
     referenceDate: options.referenceDate,
   });
-
-  const topSellingItem = topSellingResult.items[0];
-  const hasDispenseData = Boolean(topSellingItem && topSellingItem.units_sold > 0);
 
   const toolCalls: ExecutedToolCallRecord[] = [
     {
@@ -1757,10 +1755,39 @@ export async function generateDailyBriefing(
     },
   ];
 
+  const topSellingItem = topSellingResult.items[0];
+  const hasDispenseData = Boolean(topSellingItem && topSellingItem.units_sold > 0);
+
   if (!hasDispenseData) {
     return {
       briefing: NO_DATA_BRIEFING_MESSAGE,
       hasData: false,
+      isAiGenerated: false,
+      toolCalls,
+    };
+  }
+
+  const isTestEnv =
+    typeof process !== 'undefined' &&
+    (process.env.NODE_ENV === 'test' || Boolean(process.env.VITEST));
+
+  const isOffline =
+    options.isOffline ??
+    (isTestEnv
+      ? false
+      : typeof window !== 'undefined' && typeof navigator !== 'undefined'
+        ? navigator.onLine === false
+        : false);
+
+  const lowStockCount = lowStockRows.length;
+  const expiringCount = expiringResult.batches.length;
+  const topItemName = topSellingItem.brand_name;
+
+  if (isOffline) {
+    const offlineBriefing = `${lowStockCount} items low stock. ${expiringCount} batch${expiringCount === 1 ? '' : 'es'} expiring. Top item: ${topItemName}`;
+    return {
+      briefing: offlineBriefing,
+      hasData: true,
       isAiGenerated: false,
       toolCalls,
     };
@@ -2616,6 +2643,7 @@ export interface RunAssistantTurnOptions {
   forcedToolCalls?: AssistantToolCallRequest[];
   useRemoteModelEndpoint?: boolean;
   simulateOffline?: boolean;
+  isOffline?: boolean;
 }
 
 export interface AssistantTurnResult {
@@ -2729,6 +2757,112 @@ export async function runAssistantTurn(
       responseText: writeIntent.reason,
       toolCalls: [],
       status: 'declined_write',
+      logEntry,
+    };
+  }
+
+  // Offline Fallback Intercept: if offline, bypass external API calls completely!
+  const isTestEnv =
+    typeof process !== 'undefined' &&
+    (process.env.NODE_ENV === 'test' || Boolean(process.env.VITEST));
+
+  const isOffline =
+    options.isOffline ??
+    (isTestEnv
+      ? false
+      : typeof window !== 'undefined' && typeof navigator !== 'undefined'
+        ? navigator.onLine === false
+        : false);
+
+  if (isOffline) {
+    const lowerPrompt = userPrompt.toLowerCase().trim();
+
+    const isLowStockQuery =
+      /\b(running\s+low|low\s+stock|low-stock|below\s+reorder|reorder|out\s+of\s+stock|shortage)\b/i.test(
+        lowerPrompt,
+      );
+
+    const isLocationOrStockQuery =
+      /\b(where|location|place|shelf|bin|zone|stock|how\s+many|left|available|find|search|check|look\s*up)\b/i.test(
+        lowerPrompt,
+      ) ||
+      (options.contextMedicationName &&
+        lowerPrompt.includes(options.contextMedicationName.toLowerCase()));
+
+    const isOfflineStockOrLocation = isLowStockQuery || isLocationOrStockQuery;
+
+    if (!isOfflineStockOrLocation) {
+      const offlineMsg =
+        'You are offline. I can only answer basic stock and location questions right now.';
+      const logEntry: AssistantRequestLogEntry = {
+        id,
+        timestamp,
+        userPrompt,
+        responseText: offlineMsg,
+        toolCalls: [],
+        status: 'ok',
+        durationMs: Math.round((performance.now() - startTime) * 100) / 100,
+      };
+      appendAssistantRequestLog(logEntry);
+      return {
+        userPrompt,
+        responseText: offlineMsg,
+        toolCalls: [],
+        status: 'ok',
+        logEntry,
+      };
+    }
+
+    const planned = planReadOnlyToolCalls(userPrompt, {
+      contextMedicationId: options.contextMedicationId,
+      contextMedicationName: options.contextMedicationName,
+    });
+
+    const executedCalls: ExecutedToolCallRecord[] = [];
+    for (const call of planned) {
+      const record = await executeGuardedToolCall(db, call, {
+        referenceTimestamp: options.referenceTimestamp,
+        referenceDate: options.referenceDate,
+      });
+      executedCalls.push(record);
+
+      if (
+        call.name === 'search_medication' &&
+        record.status === 'executed' &&
+        !planned.some((c) => c.name === 'get_stock' || c.name === 'calc_price')
+      ) {
+        const searchOut = record.result as SearchMedicationToolOutput;
+        const topHit = searchOut.results[0];
+        if (topHit) {
+          const stockRecord = await executeGuardedToolCall(
+            db,
+            { name: 'get_stock', args: { medication_id: topHit.id } },
+            {
+              referenceTimestamp: options.referenceTimestamp,
+              referenceDate: options.referenceDate,
+            },
+          );
+          executedCalls.push(stockRecord);
+        }
+      }
+    }
+
+    const responseText = synthesizeGroundedResponseFromTools(userPrompt, executedCalls);
+    const logEntry: AssistantRequestLogEntry = {
+      id,
+      timestamp,
+      userPrompt,
+      responseText,
+      toolCalls: executedCalls,
+      status: 'ok',
+      durationMs: Math.round((performance.now() - startTime) * 100) / 100,
+    };
+    appendAssistantRequestLog(logEntry);
+    return {
+      userPrompt,
+      responseText,
+      toolCalls: executedCalls,
+      status: 'ok',
       logEntry,
     };
   }

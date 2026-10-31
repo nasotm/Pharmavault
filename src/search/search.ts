@@ -145,6 +145,7 @@ function mapRawRowToMedication(row: Record<string, SqlParam>): {
         : String(row.price_updated_at),
     updated_at:
       row.updated_at === null || row.updated_at === undefined ? null : String(row.updated_at),
+    is_archived: Number(row.is_archived) === 1 ? 1 : 0,
   };
 
   const totalStock =
@@ -242,6 +243,7 @@ export async function searchMedications(
             (SELECT GROUP_CONCAT(ma.alias, '|||') FROM medication_alias ma WHERE ma.medication_id = m.id) AS joined_aliases
      FROM medication m
      WHERE m.barcode = ?
+       AND COALESCE(m.is_archived, 0) = 0
      LIMIT ?`,
     [trimmed, limit],
   );
@@ -280,6 +282,7 @@ export async function searchMedications(
             (SELECT GROUP_CONCAT(ma.alias, '|||') FROM medication_alias ma WHERE ma.medication_id = m.id) AS joined_aliases
      FROM medication m
      WHERE m.brand_name LIKE ? ESCAPE '\\' COLLATE NOCASE
+       AND COALESCE(m.is_archived, 0) = 0
      ORDER BY
        CASE WHEN LOWER(m.brand_name) = LOWER(?) THEN 0 ELSE 1 END ASC,
        m.brand_name COLLATE NOCASE ASC,
@@ -339,7 +342,8 @@ export async function searchMedications(
     }>(
       `SELECT id, brand_name, generic_name, search_text
        FROM medication
-       WHERE ${whereTerms}
+       WHERE (${whereTerms})
+         AND COALESCE(is_archived, 0) = 0
        ORDER BY (${scoreTerms}) DESC, id ASC
        LIMIT 120`,
       [...patternParams, ...patternParams],
@@ -350,7 +354,7 @@ export async function searchMedications(
       brand_name: string;
       generic_name: string | null;
       search_text: string | null;
-    }>('SELECT id, brand_name, generic_name, search_text FROM medication LIMIT 120');
+    }>('SELECT id, brand_name, generic_name, search_text FROM medication WHERE COALESCE(is_archived, 0) = 0 LIMIT 120');
   }
 
   const scoredCandidates: {

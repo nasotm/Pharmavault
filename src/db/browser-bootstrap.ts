@@ -124,7 +124,9 @@ export async function bootFoundationDatabase(): Promise<FoundationBootSnapshot> 
   return loadFoundationSnapshot();
 }
 
-export async function loadFoundationSnapshot(): Promise<FoundationBootSnapshot> {
+export async function loadFoundationSnapshot(
+  options?: { includeArchived?: boolean },
+): Promise<FoundationBootSnapshot> {
   if (!activeAdapter) {
     return bootFoundationDatabase();
   }
@@ -136,9 +138,9 @@ export async function loadFoundationSnapshot(): Promise<FoundationBootSnapshot> 
     total_price_history: number;
   }>(`
     SELECT
-      (SELECT COUNT(*) FROM medication) AS total_meds,
-      (SELECT COUNT(*) FROM medication WHERE price_confirmed = 0 OR unit_price_cents IS NULL) AS unconfirmed_or_null,
-      COALESCE((SELECT SUM(quantity) FROM batch), 0) AS total_stock,
+      (SELECT COUNT(*) FROM medication WHERE COALESCE(is_archived, 0) = 0) AS total_meds,
+      (SELECT COUNT(*) FROM medication WHERE (price_confirmed = 0 OR unit_price_cents IS NULL) AND COALESCE(is_archived, 0) = 0) AS unconfirmed_or_null,
+      COALESCE((SELECT SUM(b.quantity) FROM batch b JOIN medication m ON m.id = b.medication_id WHERE COALESCE(m.is_archived, 0) = 0), 0) AS total_stock,
       (SELECT COUNT(*) FROM price_history) AS total_price_history
   `);
 
@@ -149,7 +151,7 @@ export async function loadFoundationSnapshot(): Promise<FoundationBootSnapshot> 
     total_price_history: 0,
   };
 
-  const allMedications = await listMedications();
+  const allMedications = await listMedications(options);
   const displayMedications = allMedications.slice(0, 25);
   const items: MedicationFoundationSnapshot[] = [];
 

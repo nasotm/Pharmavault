@@ -354,6 +354,7 @@ export async function findGenericEquivalentsInStock(
      FROM medication m
      LEFT JOIN batch b ON b.medication_id = m.id
      WHERE m.id != ?
+       AND COALESCE(m.is_archived, 0) = 0
        AND LOWER(TRIM(m.brand_name)) != LOWER(TRIM(?))
        AND m.generic_name IS NOT NULL
        AND TRIM(m.generic_name) != ''

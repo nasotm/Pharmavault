@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS medication (
   price_confirmed INTEGER DEFAULT 0 CHECK (price_confirmed IN (0, 1)), -- 1 = pharmacist confirmed
   price_updated_at TEXT,
   updated_at TEXT,
+  is_archived INTEGER NOT NULL DEFAULT 0 CHECK (is_archived IN (0, 1)),
   -- Precomputed normalized search text across brand_name + generic_name + aliases
   search_text TEXT
 );
@@ -110,6 +111,7 @@ CREATE INDEX IF NOT EXISTS idx_medication_alias_alias ON medication_alias(alias)
 CREATE INDEX IF NOT EXISTS idx_medication_alias_medication_id ON medication_alias(medication_id);
 CREATE INDEX IF NOT EXISTS idx_batch_medication_id ON batch(medication_id);
 CREATE INDEX IF NOT EXISTS idx_price_history_medication_id ON price_history(medication_id);
+CREATE INDEX IF NOT EXISTS idx_medication_is_archived ON medication(is_archived);
 
 -- Automatic maintenance of precomputed medication.search_text
 CREATE TRIGGER IF NOT EXISTS trg_medication_sync_search_text_insert

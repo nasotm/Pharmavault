@@ -15,6 +15,7 @@ import {
 } from '../dashboards';
 import { generateDailyBriefing } from '../assistant/assistant';
 import { getRepositoryDatabase } from '../db/repository';
+import { useOnlineStatus } from '../hooks/useOnlineStatus';
 import {
   dispenseStock,
   formatCurrentUserIdentifier,
@@ -54,6 +55,7 @@ export const OperationalDashboards: React.FC<OperationalDashboardsProps> = ({
   onSelectMedication,
   onDatabaseMutated,
 }) => {
+  const isOnline = useOnlineStatus();
   const [lowStockRows, setLowStockRows] = useState<LowStockDashboardRow[]>([]);
   const [expiringResult, setExpiringResult] = useState<ExpiringSoonDashboardResult | null>(null);
   const [stockoutPredictions, setStockoutPredictions] = useState<StockoutPredictionRow[]>([]);
@@ -88,7 +90,7 @@ export const OperationalDashboards: React.FC<OperationalDashboardsProps> = ({
       setStockoutInsight(immediateInsight);
 
       setIsBriefingLoading(true);
-      generateDailyBriefing(db, { useRemoteModelEndpoint: true })
+      generateDailyBriefing(db, { useRemoteModelEndpoint: isOnline, isOffline: !isOnline })
         .then((briefingRes) => {
           setDailyBriefing(briefingRes.briefing);
         })
@@ -122,11 +124,11 @@ export const OperationalDashboards: React.FC<OperationalDashboardsProps> = ({
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [isOnline]);
 
   useEffect(() => {
     void loadDashboards();
-  }, [loadDashboards, refreshTrigger]);
+  }, [loadDashboards, refreshTrigger, isOnline]);
 
   const handleExportLowStockCsv = () => {
     const csv = exportLowStockToCsv(lowStockRows);
@@ -287,6 +289,14 @@ export const OperationalDashboards: React.FC<OperationalDashboardsProps> = ({
                 <span className="px-2 py-0.5 text-[10px] uppercase font-bold tracking-wider bg-indigo-500/30 text-indigo-200 border border-indigo-400/30 rounded-md">
                   Business Advisor
                 </span>
+                {!isOnline && (
+                  <span
+                    data-testid="briefing-offline-badge"
+                    className="px-2 py-0.5 text-[10px] uppercase font-bold tracking-wider bg-amber-500/30 text-amber-200 border border-amber-400/30 rounded-md"
+                  >
+                    Offline Mode
+                  </span>
+                )}
               </h2>
               <p className="text-xs text-indigo-200/70">
                 Proactive morning briefing based on real sales, stock, and expiring batches

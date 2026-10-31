@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS medication (
   price_confirmed INTEGER DEFAULT 0 CHECK (price_confirmed IN (0, 1)), -- 1 = pharmacist confirmed
   price_updated_at TEXT,
   updated_at TEXT,
+  is_archived INTEGER NOT NULL DEFAULT 0 CHECK (is_archived IN (0, 1)),
   search_text TEXT
 );
 
@@ -304,11 +305,16 @@ async function ensureSearchTextColumnAndIndexes(db: DatabasePort): Promise<void>
     }
   }
 
+  if (!existingColumns.has('is_archived')) {
+    await db.exec('ALTER TABLE medication ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0;');
+  }
+
   await db.exec(`
     CREATE INDEX IF NOT EXISTS idx_medication_brand_name_nocase ON medication(brand_name COLLATE NOCASE);
     CREATE INDEX IF NOT EXISTS idx_medication_search_text ON medication(search_text);
     CREATE INDEX IF NOT EXISTS idx_medication_alias_medication_id ON medication_alias(medication_id);
     CREATE INDEX IF NOT EXISTS idx_batch_medication_id ON batch(medication_id);
+    CREATE INDEX IF NOT EXISTS idx_medication_is_archived ON medication(is_archived);
 
     UPDATE medication
     SET search_text = LOWER(

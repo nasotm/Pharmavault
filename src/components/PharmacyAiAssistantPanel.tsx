@@ -1,6 +1,5 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import {
-  AssistantModelUnreachableError,
   AssistantRateLimitError,
   defaultAssistantRateLimiter,
   runAssistantTurn,
@@ -8,6 +7,7 @@ import {
   type ExecutedToolCallRecord,
 } from '../assistant';
 import { getRepositoryDatabase, type Medication } from '../db/repository';
+import { useOnlineStatus } from '../hooks/useOnlineStatus';
 
 export interface PharmacyAiAssistantPanelProps {
   selectedMedication: Medication | null;
@@ -51,6 +51,7 @@ interface SpeechRecognitionLike {
 export const PharmacyAiAssistantPanel: React.FC<PharmacyAiAssistantPanelProps> = ({
   selectedMedication,
 }) => {
+  const isOnline = useOnlineStatus();
   const [isOpen, setIsOpen] = useState<boolean>(false);
   const [queryInput, setQueryInput] = useState<string>('');
   const [messages, setMessages] = useState<ChatMessageItem[]>([]);
@@ -58,59 +59,12 @@ export const PharmacyAiAssistantPanel: React.FC<PharmacyAiAssistantPanelProps> =
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
   const [isListeningVoice, setIsListeningVoice] = useState<boolean>(false);
   const [voiceStatusNote, setVoiceStatusNote] = useState<string | null>(null);
-  const [isModelOffline, setIsModelOffline] = useState<boolean>(false);
   const [rateLimitStatus, setRateLimitStatus] = useState(() =>
     defaultAssistantRateLimiter.getStatus(),
   );
 
-  // Check model reachability on mount and listen to browser online/offline events
-  useEffect(() => {
-    let mounted = true;
-
-    const handleOffline = () => {
-      if (mounted) {
-        setIsModelOffline(true);
-        setIsOpen(false);
-      }
-    };
-
-    if (typeof window !== 'undefined') {
-      window.addEventListener('offline', handleOffline);
-    }
-
-    fetch('/api/ai/health', { method: 'GET' })
-      .then((res) => {
-        if (mounted && !res.ok) {
-          setIsModelOffline(true);
-        }
-      })
-      .catch(() => {
-        // Keep usable via local read-only planner unless explicitly unreachable during chat
-      });
-
-    return () => {
-      mounted = false;
-      if (typeof window !== 'undefined') {
-        window.removeEventListener('offline', handleOffline);
-      }
-    };
-  }, []);
-
   const refreshRateStatus = () => {
     setRateLimitStatus(defaultAssistantRateLimiter.getStatus());
-  };
-
-  const triggerOfflineFallback = () => {
-    setIsModelOffline(true);
-    setIsOpen(false);
-    if (typeof document !== 'undefined') {
-      const searchInput = document.getElementById(
-        'primary-medication-search-input',
-      ) as HTMLInputElement | null;
-      if (searchInput) {
-        searchInput.focus();
-      }
-    }
   };
 
   const formatToolCallSignature = (tc: ExecutedToolCallRecord): string => {
@@ -234,7 +188,8 @@ export const PharmacyAiAssistantPanel: React.FC<PharmacyAiAssistantPanelProps> =
         referenceDate: nowIso.slice(0, 10),
         referenceTimestamp: nowIso,
         forcedToolCalls,
-        useRemoteModelEndpoint: !forcedToolCalls,
+        useRemoteModelEndpoint: !forcedToolCalls && isOnline,
+        isOffline: !isOnline,
       });
 
       const newMsg: ChatMessageItem = {
@@ -251,10 +206,6 @@ export const PharmacyAiAssistantPanel: React.FC<PharmacyAiAssistantPanelProps> =
       refreshRateStatus();
     } catch (err) {
       refreshRateStatus();
-      if (err instanceof AssistantModelUnreachableError) {
-        triggerOfflineFallback();
-        return;
-      }
       if (err instanceof AssistantRateLimitError) {
         setErrorBanner(err.message);
         return;
@@ -317,11 +268,6 @@ export const PharmacyAiAssistantPanel: React.FC<PharmacyAiAssistantPanelProps> =
     }
   };
 
-  // Offline fallback: if the model is unreachable, hide the AI Assistant so the plain search bar remains primary
-  if (isModelOffline) {
-    return null;
-  }
-
   return (
     <div className="fixed bottom-6 right-6 z-40 flex flex-col items-end">
       {/* Floating Chat Window */}
@@ -352,7 +298,7 @@ export const PharmacyAiAssistantPanel: React.FC<PharmacyAiAssistantPanelProps> =
                 </svg>
               </div>
               <div>
-                <h2 className="text-sm font-bold tracking-tight text-white">
+                <h2 className="text-sm font-bold tracking-tight text-white flex items-center gap-2">
                   Pharmacy Assistant
                 </h2>
                 <p className="text-[11px] text-slate-300">
@@ -362,6 +308,14 @@ export const PharmacyAiAssistantPanel: React.FC<PharmacyAiAssistantPanelProps> =
             </div>
 
             <div className="flex items-center gap-1.5">
+              {!isOnline && (
+                <span
+                  data-testid="assistant-offline-badge"
+                  className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider bg-amber-500/20 text-amber-300 border border-amber-400/30 rounded-md"
+                >
+                  Offline Mode
+                </span>
+              )}
               <span
                 data-testid="ai-rate-limit-badge"
                 className="sr-only"
@@ -642,13 +596,22 @@ export const PharmacyAiAssistantPanel: React.FC<PharmacyAiAssistantPanelProps> =
       )}
 
       {/* Floating Action Button (Chat Bubble Icon in Bottom Right Corner) */}
-      <button
-        type="button"
-        data-testid="ai-assistant-fab"
-        onClick={() => setIsOpen((prev) => !prev)}
-        aria-label={isOpen ? 'Close Pharmacy Assistant' : 'Open Pharmacy Assistant'}
-        className="flex items-center gap-2.5 px-4 py-3.5 rounded-full bg-slate-900 hover:bg-slate-800 text-white shadow-xl shadow-slate-900/20 transition-all hover:scale-[1.02] active:scale-[0.98]"
-      >
+      <div className="flex flex-col items-end gap-1.5">
+        {!isOnline && !isOpen && (
+          <span
+            data-testid="assistant-fab-offline-badge"
+            className="px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wider bg-amber-500 text-slate-950 rounded-full shadow-md animate-pulse"
+          >
+            Offline Mode
+          </span>
+        )}
+        <button
+          type="button"
+          data-testid="ai-assistant-fab"
+          onClick={() => setIsOpen((prev) => !prev)}
+          aria-label={isOpen ? 'Close Pharmacy Assistant' : 'Open Pharmacy Assistant'}
+          className="flex items-center gap-2.5 px-4 py-3.5 rounded-full bg-slate-900 hover:bg-slate-800 text-white shadow-xl shadow-slate-900/20 transition-all hover:scale-[1.02] active:scale-[0.98]"
+        >
         <svg
           className="w-5 h-5 text-sky-400"
           fill="none"
@@ -667,6 +630,7 @@ export const PharmacyAiAssistantPanel: React.FC<PharmacyAiAssistantPanelProps> =
           {isOpen ? 'Close Assistant' : 'Ask Assistant'}
         </span>
       </button>
+      </div>
     </div>
   );
 };
