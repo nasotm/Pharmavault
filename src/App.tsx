@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { CheckCircle2, Lock, Moon, Plus, Sun, X } from 'lucide-react';
 import { AlgerianImportModal } from './components/AlgerianImportModal';
 import { AlgerianNomenclatureImportCard } from './components/AlgerianNomenclatureImportCard';
+import { PharmacyInventoryImportCard } from './components/PharmacyInventoryImportCard';
 import { ManualMedicationModal } from './components/ManualMedicationModal';
 import { BulkImportFlow } from './components/BulkImportFlow';
 import { ChangePinSection } from './components/ChangePinSection';
@@ -937,6 +938,12 @@ export default function App() {
 
             {/* Database Backup & Restore */}
             <DatabaseBackupRestorePanel onRestoreCommitted={refreshSnapshot} />
+
+            {/* Pharmacy Inventory CSV Importer (Prices in DA, Stock, Location) */}
+            <PharmacyInventoryImportCard
+              currentUserIdentifier={formatCurrentUserIdentifier(currentUser)}
+              onImportCommitted={refreshSnapshot}
+            />
 
             {/* Hugging Face Algerian Drug Nomenclature CSV Import */}
             <AlgerianNomenclatureImportCard onImportCommitted={refreshSnapshot} />
